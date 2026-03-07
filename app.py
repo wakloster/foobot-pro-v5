@@ -321,6 +321,14 @@ with col2:
             fig.update_layout(showlegend=False, height=250, margin=dict(l=10, r=10, t=50, b=20), xaxis_range=[0, 110])
             fig.update_traces(texttemplate='%{text}%', textposition='outside')
             st.plotly_chart(fig, use_container_width=True)
+            
+            # Aviso Legal (sempre ao final da análise)
+            st.markdown("---")
+            st.warning("""
+                **📢 AVISO LEGAL:** O placar sugerido é uma estimativa baseada em algoritmos de 
+                Inteligência Artificial. O **FOOBOT PRO V5** não garante resultados. 
+                O futebol é imprevisível; use as informações como suporte à sua própria decisão.
+            """)
     
     elif not autorizado:
         st.warning("Aguardando login para liberar os dados de I.A.")
