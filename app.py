@@ -7,6 +7,7 @@ from google import genai
 import pandas as pd
 import plotly.express as px
 from streamlit_gsheets import GSheetsConnection
+import random
 
 # -----------------------------
 # CONFIGURAÇÕES INICIAIS
@@ -98,6 +99,30 @@ def registrar_log(usuario, acao, detalhe):
         # Se der erro (ex: aba não existe), ele não trava o app, mas avisa no log do console
         print(f"Erro no log: {e}")
         pass
+    
+def gerenciar_broadcast(nova_msg=None):
+    try:
+        df_config = conn.read(worksheet="config", ttl=0)
+        
+        if nova_msg is not None:
+            mask = df_config['chave'].str.strip() == 'broadcast_msg'
+            # Se a mensagem for vazia, salvamos uma string vazia de verdade
+            valor_para_salvar = str(nova_msg).strip() if nova_msg else ""
+            df_config.loc[mask, 'valor'] = valor_para_salvar
+            conn.update(worksheet="config", data=df_config)
+            return valor_para_salvar
+        
+        # O PULO DO GATO: Se o valor for NaN ou nulo, retorna uma string vazia
+        res = df_config.loc[df_config['chave'].str.strip() == 'broadcast_msg', 'valor']
+        if not res.empty:
+            msg = res.values[0]
+            # Se for 'nan' (do Pandas) ou Nulo, limpamos
+            if pd.isna(msg) or str(msg).lower() == 'nan':
+                return ""
+            return str(msg)
+        return ""
+    except:
+        return ""
 
 LEAGUES = {
     "🇧🇷 Brasileirão": "BSA",         # Prioridade máxima!
@@ -193,9 +218,21 @@ else:
         with st.sidebar.expander("📜 Últimos Logs"):
             try:
                 df_logs_view = conn.read(worksheet="logs", ttl=0)
-                st.table(df_logs_view.tail(5)) # Mostra os últimos 5 movimentos
+                st.table(df_logs_view.tail(5)) 
             except:
                 st.info("Aba 'logs' não encontrada no Sheets.")
+        
+        # --- ABA 4: COMUNICAÇÃO (BROADCAST) ---
+        # ESTE BLOCO AGORA ESTÁ FORA DO EXCEPT
+        with st.sidebar.expander("📢 Mural de Avisos"):
+            msg_atual = gerenciar_broadcast()
+            nova_msg = st.text_area("Nova mensagem:", value=msg_atual, height=100)
+            
+            if st.button("Atualizar Mural", use_container_width=True):
+                gerenciar_broadcast(nova_msg)
+                registrar_log(st.session_state.usuario, "BROADCAST", "Atualizou o aviso global")
+                st.success("Mural atualizado!")
+                time.sleep(1); st.rerun()
 
 # --- VARIÁVEIS DE CONTROLE PARA O RESTO DO APP ---
 autorizado = st.session_state.logado
@@ -298,6 +335,15 @@ def extrair_probabilidades(texto_analise):
 # INTERFACE PRINCIPAL
 # -----------------------------
 st.title("⚽ FOOBOT PRO v5 - FOOBOT I.A")
+# EXIBIÇÃO DO BROADCAST COM EMOJI ALEATÓRIO
+msg_global = gerenciar_broadcast()
+if msg_global:
+    # Lista de emojis para dar aquele grau no visual
+    emojis = ["📢", "🔔", "⚠️", "🔥", "🚀", "💡", "⚽", "🏆"]
+    icon = random.choice(emojis)
+    
+    st.info(f"{icon} **AVISO:** {msg_global}")
+
 st.markdown("---")
 
 col1, col2 = st.columns([1, 2])
