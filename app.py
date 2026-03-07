@@ -58,6 +58,27 @@ def descontar_credito(nome_usuario):
         st.error(f"Erro ao atualizar saldo: {e}")
         return None
 
+def adicionar_creditos(nome_usuario, quantidade):
+        try:
+            # 1. Lê os dados mais recentes sem cache
+            df_atual = conn.read(ttl=0)
+            
+            # 2. Localiza o usuário (case-insensitive)
+            idx = df_atual[df_atual['nome'].str.lower() == nome_usuario.lower()].index
+            
+            if not idx.empty:
+                saldo_atual = int(df_atual.loc[idx, 'creditos'].values[0])
+                novo_saldo = saldo_atual + quantidade
+                df_atual.loc[idx, 'creditos'] = novo_saldo
+                
+                # 3. Atualiza a planilha no Google Sheets
+                conn.update(data=df_atual)
+                return novo_saldo
+            return None
+        except Exception as e:
+            st.error(f"Erro ao adicionar créditos: {e}")
+            return None
+
 LEAGUES = {
     "🇧🇷 Brasileirão": "BSA",         # Prioridade máxima!
     "🇪🇺 Champions League": "CL",
@@ -95,9 +116,12 @@ if not st.session_state.logado:
             creditos_val = int(user_row['creditos'].values[0])
             
             if creditos_val > 0:
+                # Captura o nível (0 ou 1). Se a coluna não existir, assume 0.
+                nivel_usuario = int(user_row['nivel'].values[0]) if 'nivel' in user_row.columns else 0
+                
                 st.session_state.logado = True
                 st.session_state.usuario = nome_input_login
-                # Busca nome de exibição na planilha ou usa o login formatado
+                st.session_state.nivel = nivel_usuario
                 st.session_state.nome_exibicao = user_row['exibicao'].values[0] if 'exibicao' in user_row.columns else nome_input_login.capitalize()
                 st.rerun()
             else:
@@ -105,25 +129,49 @@ if not st.session_state.logado:
         else:
             st.sidebar.error("❌ Usuário não encontrado na base.")
 else:
-    # --- TELA LOGADA (IGUAL À IMAGEM) ---
+    # --- TELA LOGADA (SIDEBAR) ---
     st.sidebar.success(f"Logado como: **{st.session_state.nome_exibicao}**")
     
     st.sidebar.markdown("#### 🪙 Créditos Disponíveis")
     
-    # Busca saldo em tempo real para exibir no contador grande
+    # Busca saldo em tempo real
     df_vivos = obter_dados_usuarios(tempo_cache=0)
     saldo_atual = int(df_vivos.loc[df_vivos['nome'].str.lower() == st.session_state.usuario, 'creditos'].values[0])
     
-    # Layout de colunas para o contador e o indicador de débito
     col_saldo, col_debito = st.sidebar.columns([1, 1])
     with col_saldo:
         st.title(f"{saldo_atual}")
     with col_debito:
-        st.markdown("\n") # Espaçador para alinhar
+        st.markdown("\n") 
         st.error("🔻 -1")
     
     st.sidebar.info("Plano: **Premium Gold**")
-    
+
+    # --- ÁREA ADMINISTRATIVA (ESTRUTURA CORRIGIDA) ---
+    # Esta parte DEVE vir antes do botão de Logout para garantir a renderização
+    if st.session_state.get("nivel") == 1:
+        st.sidebar.markdown("---")
+        st.sidebar.markdown("### 🛠️ Painel Admin")
+        
+        with st.sidebar.expander("➕ Adicionar Créditos", expanded=False):
+            u_destino = st.text_input("Usuário destino:", key="admin_user_dest")
+            qtd = st.number_input("Qtd de créditos:", min_value=1, step=10, key="admin_qtd")
+            
+            if st.sidebar.button("Confirmar Recarga", key="btn_recarga", use_container_width=True):
+                if u_destino and qtd:
+                    resultado = adicionar_creditos(u_destino, qtd)
+                    if resultado is not None:
+                        st.sidebar.success(f"Sucesso! {u_destino} agora tem {resultado}")
+                        time.sleep(2)
+                        st.rerun()
+                    else:
+                        st.sidebar.error("Usuário não encontrado.")
+                else:
+                    st.sidebar.warning("Preencha todos os campos.")
+
+    st.sidebar.markdown("---")
+
+    # --- BOTÃO DE LOGOUT (SEMPRE POR ÚLTIMO) ---
     if st.sidebar.button("🚪 Sair / Logout", use_container_width=True):
         st.session_state.logado = False
         st.session_state.usuario = None
