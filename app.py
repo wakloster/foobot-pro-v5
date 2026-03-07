@@ -59,12 +59,13 @@ def descontar_credito(nome_usuario):
         return None
 
 LEAGUES = {
+    "🇧🇷 Brasileirão": "BSA",         # Prioridade máxima!
+    "🇪🇺 Champions League": "CL",
     "🇬🇧 Premier League": "PL",
     "🇪🇸 La Liga": "PD",
     "🇩🇪 Bundesliga": "BL1",
     "🇮🇹 Serie A": "SA",
-    "🇫🇷 Ligue 1": "FL1",
-    "🇧🇷 Brasileirão": "BSA"
+    "🇫🇷 Ligue 1": "FL1"
 }
 
 # -----------------------------
@@ -201,7 +202,11 @@ def realizar_analise_gemini(home, away, league):
 # -----------------------------
 @st.cache_data(ttl=600)
 def get_matches(league_code, date_str):
-    url = f"{BASE_URL}/competitions/{league_code}/matches?dateFrom={date_str}&dateTo={date_str}"
+    # Criamos a data de "amanhã" para cobrir jogos que viram a noite no UTC
+    dt_obj = datetime.datetime.strptime(date_str, "%Y-%m-%d")
+    amanha_str = (dt_obj + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+    
+    url = f"{BASE_URL}/competitions/{league_code}/matches?dateFrom={date_str}&dateTo={amanha_str}"
     try:
         response = requests.get(url, headers=headers)
         if response.status_code == 200:
@@ -232,53 +237,64 @@ col1, col2 = st.columns([1, 2])
 with col1:
     st.subheader("🏆 Seleção de Partida")
     
-    # Data agora no corpo principal e formatada BR
-    date = st.date_input(
-        "📅 Data da partida", 
-        datetime.date.today(), 
-        format="DD/MM/YYYY"
-    )
-    date_str = date.strftime("%Y-%m-%d")
+    btn_analise = False
+    
+    # 1. TRAVA DE ACESSO: Só mostra o calendário se estiver logado
+    if autorizado:
+        fuso_br = pytz.timezone("America/Sao_Paulo")
+        hoje_br = datetime.datetime.now(fuso_br).date()
+        
+        # O Streamlit só executa o que vem abaixo se o usuário interagir com a data
+        date = st.date_input(
+            "📅 Selecione a data para buscar jogos:", 
+            value=None, # Deixa vazio inicialmente para não disparar a busca automática
+            format="DD/MM/YYYY"
+        )
 
-    all_matches = []
-    leagues_found = []
+        if date:
+            date_str = date.strftime("%Y-%m-%d")
+            all_matches = []
+            leagues_found = []
 
-    # Coleta de jogos
-    for league_name, league_code in LEAGUES.items():
-        matches = get_matches(league_code, date_str)
-        if matches:
-            leagues_found.append(league_name)
-            for m in matches:
-                utc_dt = datetime.datetime.strptime(m["utcDate"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=pytz.utc)
-                brasil_dt = utc_dt.astimezone(pytz.timezone("America/Sao_Paulo"))
+            # 2. BUSCA SOB DEMANDA: Só roda o loop se a data foi selecionada
+            with st.spinner("Buscando partidas nas ligas..."):
+                for league_name, league_code in LEAGUES.items():
+                    matches = get_matches(league_code, date_str)
+                    if matches:
+                        for m in matches:
+                            utc_dt = datetime.datetime.strptime(m["utcDate"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=pytz.utc)
+                            brasil_dt = utc_dt.astimezone(pytz.timezone("America/Sao_Paulo"))
+                            
+                            if brasil_dt.strftime("%Y-%m-%d") == date_str:
+                                if league_name not in leagues_found:
+                                    leagues_found.append(league_name)
+                                
+                                all_matches.append({
+                                    "horario": brasil_dt.strftime("%H:%M"),
+                                    "home": m["homeTeam"]["name"],
+                                    "away": m["awayTeam"]["name"],
+                                    "name": f"[ {brasil_dt.strftime('%H:%M')} ] {m['homeTeam']['name']} x {m['awayTeam']['name']}",
+                                    "league_display": league_name,
+                                    "league_name": m["competition"]["name"]
+                                })
+
+            if all_matches:
+                sel_league = st.selectbox("Escolha a Liga", ["🌍 Todas"] + leagues_found)
+                filtered = [m for m in all_matches if sel_league == "🌍 Todas" or m['league_display'] == sel_league]
+                match_names = [m['name'] for m in filtered]
+                selected_name = st.selectbox("Escolha o Jogo", match_names)
                 
-                all_matches.append({
-                    "horario": brasil_dt.strftime("%H:%M"),
-                    "home": m["homeTeam"]["name"],
-                    "away": m["awayTeam"]["name"],
-                    "name": f"[ {brasil_dt.strftime('%H:%M')} ] {m['homeTeam']['name']} x {m['awayTeam']['name']}",
-                    "league_display": league_name,
-                    "league_name": m["competition"]["name"]
-                })
-
-    if all_matches:
-        sel_league = st.selectbox("Escolha a Liga", ["🌍 Todas"] + leagues_found)
-        filtered = [m for m in all_matches if sel_league == "🌍 Todas" or m['league_display'] == sel_league]
-        match_names = [m['name'] for m in filtered]
-        selected_name = st.selectbox("Escolha o Jogo", match_names)
-        
-        jogo = next(item for item in filtered if item["name"] == selected_name)
-        st.info(f"📍 **Liga:** {jogo['league_name']}\n\n⏰ **Início:** {jogo['horario']}")
-        
-        # --- BLOQUEIO DE SEGURANÇA ---
-        if autorizado:
-            btn_analise = st.button("🚀 GERAR ANÁLISE PREMIUM", use_container_width=True)
-        else:
-            st.error("🔒 Faça login com um usuário válido para liberar a análise.")
-            btn_analise = False
+                jogo = next(item for item in filtered if item["name"] == selected_name)
+                st.info(f"📍 **Liga:** {jogo['league_name']}\n\n⏰ **Início:** {jogo['horario']}")
+                
+                # Botão de análise (já protegido pelo 'autorizado' lá em cima)
+                btn_analise = st.button("🚀 GERAR ANÁLISE PREMIUM", use_container_width=True)
+            else:
+                st.warning("Nenhuma partida encontrada para esta data nas ligas configuradas.")
     else:
-        st.warning("Nenhum jogo encontrado.")
-        btn_analise = False
+        # Mensagem para quem não está logado
+        st.error("🔒 Área Restrita")
+        st.info("Para visualizar as partidas disponíveis e gerar análises, por favor, realize o login na barra lateral.")
 
 with col2:
     st.subheader("📊 Análise de Inteligência")
