@@ -142,8 +142,8 @@ if "logado" not in st.session_state:
     st.session_state.logado = False
     st.session_state.usuario = None
     st.session_state.nome_exibicao = ""
-    if "ultima_analise" not in st.session_state:
-        st.session_state.ultima_analise = None
+if "ultima_analise" not in st.session_state:
+    st.session_state.ultima_analise = None
 
 # --- SIDEBAR ESTILIZADA ---
 st.sidebar.markdown("### 👤 Área do Usuário")
