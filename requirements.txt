@@ -5,3 +5,4 @@ pandas
 plotly
 pytz
 st-gsheets-connection
+firebase-admin

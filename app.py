@@ -6,8 +6,9 @@ import time
 from google import genai
 import pandas as pd
 import plotly.express as px
-from streamlit_gsheets import GSheetsConnection
 import random
+import firebase_admin
+from firebase_admin import credentials, firestore
 
 # -----------------------------
 # CONFIGURAÇÕES INICIAIS
@@ -18,108 +19,123 @@ API_KEY_FOOTBALL = st.secrets["FOOTBALL_API_KEY"]
 headers = {"X-Auth-Token": API_KEY_FOOTBALL}
 BASE_URL = "https://api.football-data.org/v4"
 
-# Parâmetros de Simulação
-MAX_GOALS = 8
-SIMULATIONS = 50000
-HOME_ADVANTAGE = 1.10
-
 # ------------------------
 # AQUI COMEÇA A DEFINIÇÃO DE TODAS AS FUNÇÕES
 # ------------------------
 
-# 1. Cria a conexão usando as chaves [connections.gsheets] do seu secrets.toml
-conn = st.connection("gsheets", type=GSheetsConnection)
 
-def obter_dados_usuarios(tempo_cache="1m"):
+# Inicializa o Firebase usando os Secrets do Streamlit
+if not firebase_admin._apps:
+    # Transforma o dicionário do TOML em credenciais válidas
+    cred_dict = st.secrets["firebase"]
+    cred = credentials.Certificate(dict(cred_dict))
+    firebase_admin.initialize_app(cred)
+
+db = firestore.client()
+
+def limpar_analise():
+    if "ultima_analise" in st.session_state:
+        st.session_state.ultima_analise = None
+
+# -----------------------------
+# FUNÇÕES FIREBASE (MIGRAÇÃO)
+# -----------------------------
+
+def obter_logs_firebase(limite=50):
     try:
-        # 2. Lê a planilha usando a URL que está dentro da seção [connections.gsheets]
-        # ttl="1m" mantém um cache de 1 minuto para não estourar a cota do Google
-        df = conn.read(ttl=tempo_cache)
-        return df
+        # Busca na coleção 'logs' ordenando pela data decrescente
+        logs_ref = db.collection('logs').order_by(
+            "data_hora", direction=firestore.Query.DESCENDING
+        ).limit(limite)
+        
+        docs = logs_ref.stream()
+        logs_list = []
+        
+        for doc in docs:
+            d = doc.to_dict()
+            if 'data_hora' in d:
+                # Converte o timestamp do Firebase para o horário de Brasília
+                d['data_hora'] = d['data_hora'].astimezone(pytz.timezone("America/Sao_Paulo")).strftime("%d/%m/%Y %H:%M:%S")
+            logs_list.append(d)
+            
+        return pd.DataFrame(logs_list)
     except Exception as e:
-        st.error(f"Erro ao carregar créditos: {e}")
         return pd.DataFrame()
-    
-def descontar_credito(nome_usuario):
+
+def obter_dados_usuarios_firebase():
+    """Busca todos os usuários da coleção 'usuarios' no Firestore"""
     try:
-        # Lê os dados sem cache (ttl=0) para pegar o saldo mais atualizado
-        df_atual = conn.read(ttl=0)
+        users_ref = db.collection('usuarios')
+        docs = users_ref.stream()
         
-        # Localiza o índice do usuário
-        idx = df_atual[df_atual['nome'].str.lower() == nome_usuario.lower()].index
+        usuarios_list = []
+        for doc in docs:
+            dados = doc.to_dict()
+            dados['id'] = doc.id  # Mantém o ID do documento
+            usuarios_list.append(dados)
+            
+        return pd.DataFrame(usuarios_list)
+    except Exception as e:
+        st.error(f"Erro ao carregar usuários do Firebase: {e}")
+        return pd.DataFrame()
+
+def descontar_credito_firebase(nome_usuario):
+    """Desconta 1 crédito diretamente no documento do usuário"""
+    try:
+        # No Firebase, usamos o nome em minúsculo como ID do documento para facilitar
+        user_ref = db.collection('usuarios').document(nome_usuario.lower())
+        doc = user_ref.get()
         
-        if not idx.empty:
-            saldo_atual = int(df_atual.loc[idx, 'creditos'].values[0])
+        if doc.exists:
+            saldo_atual = int(doc.to_dict().get('creditos', 0))
             if saldo_atual > 0:
                 novo_saldo = saldo_atual - 1
-                df_atual.loc[idx, 'creditos'] = novo_saldo
-                
-                # Salva a planilha atualizada no Google Sheets
-                conn.update(data=df_atual)
+                user_ref.update({'creditos': novo_saldo})
                 return novo_saldo
         return None
     except Exception as e:
-        st.error(f"Erro ao atualizar saldo: {e}")
+        st.error(f"Erro ao atualizar saldo no Firebase: {e}")
         return None
-
-def adicionar_creditos(nome_usuario, quantidade):
+    
+def adicionar_creditos_firebase(nome_usuario, quantidade):
     try:
-        # 1. Lê os dados mais recentes sem cache
-        df_atual = conn.read(ttl=0)
-        
-        # 2. Localiza o usuário (case-insensitive)
-        idx = df_atual[df_atual['nome'].str.lower() == nome_usuario.lower()].index
-        
-        if not idx.empty:
-            saldo_atual = int(df_atual.loc[idx, 'creditos'].values[0])
+        user_ref = db.collection('usuarios').document(nome_usuario.lower())
+        doc = user_ref.get()
+        if doc.exists:
+            saldo_atual = int(doc.to_dict().get('creditos', 0))
             novo_saldo = saldo_atual + quantidade
-            df_atual.loc[idx, 'creditos'] = novo_saldo
-            
-            # 3. Atualiza a planilha no Google Sheets
-            conn.update(data=df_atual)
+            user_ref.update({'creditos': novo_saldo})
             return novo_saldo
         return None
     except Exception as e:
-        st.error(f"Erro ao adicionar créditos: {e}")
+        st.error(f"Erro na recarga Firebase: {e}")
         return None
 
-def registrar_log(usuario, acao, detalhe):
+def registrar_log_firebase(usuario, acao, detalhe):
+    """Registra logs como novos documentos em uma coleção, sem limite de quota!"""
     try:
-        # Tenta ler a aba 'logs'. Certifique-se que ela existe no seu Sheets!
-        df_logs = conn.read(worksheet="logs", ttl=0)
-        novo_log = pd.DataFrame([{
-            "data_hora": datetime.datetime.now(pytz.timezone("America/Sao_Paulo")).strftime("%d/%m/%Y %H:%M:%S"),
+        log_ref = db.collection('logs').document() # Gera um ID automático
+        log_ref.set({
+            "data_hora": datetime.datetime.now(pytz.timezone("America/Sao_Paulo")),
             "usuario": usuario,
             "acao": acao,
             "detalhe": detalhe
-        }])
-        df_logs = pd.concat([df_logs, novo_log], ignore_index=True)
-        conn.update(worksheet="logs", data=df_logs)
+        })
     except Exception as e:
-        # Se der erro (ex: aba não existe), ele não trava o app, mas avisa no log do console
-        print(f"Erro no log: {e}")
-        pass
-    
-def gerenciar_broadcast(nova_msg=None):
+        print(f"Erro no log Firebase: {e}")
+
+def gerenciar_broadcast_firebase(nova_msg=None):
+    """Gerencia a mensagem global em um documento fixo de configuração"""
     try:
-        df_config = conn.read(worksheet="config", ttl=0)
+        config_ref = db.collection('config').document('broadcast')
         
         if nova_msg is not None:
-            mask = df_config['chave'].str.strip() == 'broadcast_msg'
-            # Se a mensagem for vazia, salvamos uma string vazia de verdade
-            valor_para_salvar = str(nova_msg).strip() if nova_msg else ""
-            df_config.loc[mask, 'valor'] = valor_para_salvar
-            conn.update(worksheet="config", data=df_config)
-            return valor_para_salvar
+            config_ref.set({'valor': str(nova_msg).strip() if nova_msg else ""})
+            return nova_msg
         
-        # O PULO DO GATO: Se o valor for NaN ou nulo, retorna uma string vazia
-        res = df_config.loc[df_config['chave'].str.strip() == 'broadcast_msg', 'valor']
-        if not res.empty:
-            msg = res.values[0]
-            # Se for 'nan' (do Pandas) ou Nulo, limpamos
-            if pd.isna(msg) or str(msg).lower() == 'nan':
-                return ""
-            return str(msg)
+        doc = config_ref.get()
+        if doc.exists:
+            return doc.to_dict().get('valor', "")
         return ""
     except:
         return ""
@@ -155,33 +171,36 @@ if not st.session_state.logado:
     nome_input_login = st.sidebar.text_input("Digite seu usuário:", key="login_input").strip().lower()
     
     if st.sidebar.button("🚀 Entrar", use_container_width=True):
-        df_usuarios = obter_dados_usuarios(tempo_cache="10m")
-        if not df_usuarios.empty and nome_input_login in df_usuarios['nome'].str.lower().values:
-            user_row = df_usuarios.loc[df_usuarios['nome'].str.lower() == nome_input_login]
-            creditos_val = int(user_row['creditos'].values[0])
+        # BUSCA DIRETA NO FIREBASE
+        user_ref = db.collection('usuarios').document(nome_input_login)
+        doc = user_ref.get()
+        
+        if doc.exists:
+            user_data = doc.to_dict()
+            creditos_val = int(user_data.get('creditos', 0))
             
             if creditos_val > 0:
-                # Captura o nível (0 ou 1). Se a coluna não existir, assume 0.
-                nivel_usuario = int(user_row['nivel'].values[0]) if 'nivel' in user_row.columns else 0
-                
                 st.session_state.logado = True
                 st.session_state.usuario = nome_input_login
-                st.session_state.nivel = nivel_usuario
-                st.session_state.nome_exibicao = user_row['exibicao'].values[0] if 'exibicao' in user_row.columns else nome_input_login.capitalize()
+                st.session_state.nivel = int(user_data.get('nivel', 0))
+                st.session_state.nome_exibicao = user_data.get('exibicao', nome_input_login.capitalize())
+                
+                # Log de sucesso (Já usando a função nova de log do Firebase)
+                registrar_log_firebase(nome_input_login, "LOGIN", "Acessou o sistema via Firebase")
                 st.rerun()
             else:
                 st.sidebar.warning("⚠️ Você não possui créditos suficientes.")
         else:
-            st.sidebar.error("❌ Usuário não encontrado na base.")
+            st.sidebar.error("❌ Usuário não encontrado no Firebase.")
 else:
     # --- TELA LOGADA (SIDEBAR) ---
-    st.sidebar.success(f"Logado como: **{st.session_state.nome_exibicao}**")
-    
+    st.sidebar.success(f"Olá **{st.session_state.nome_exibicao}**")
     st.sidebar.markdown("#### 🪙 Créditos Disponíveis")
     
-    # Busca saldo em tempo real
-    df_vivos = obter_dados_usuarios(tempo_cache=0)
-    saldo_atual = int(df_vivos.loc[df_vivos['nome'].str.lower() == st.session_state.usuario, 'creditos'].values[0])
+    # Busca saldo em tempo real no FIREBASE
+    user_ref = db.collection('usuarios').document(st.session_state.usuario)
+    doc = user_ref.get()
+    saldo_atual = int(doc.to_dict().get('creditos', 0)) if doc.exists else 0
     
     col_saldo, col_debito = st.sidebar.columns([1, 1])
     with col_saldo:
@@ -200,62 +219,63 @@ else:
         
         # --- ABA 1: GESTÃO DE CRÉDITOS ---
         with st.sidebar.expander("➕ Recarga Rápida", expanded=False):
-            u_destino = st.text_input("Usuário:", key="adm_u")
+            u_destino = st.text_input("Para:", key="adm_u").strip().lower()
             qtd = st.number_input("Quantidade:", min_value=1, step=5, key="adm_q")
-            if st.button("Confirmar", use_container_width=True):
-                res = adicionar_creditos(u_destino, qtd)
-                if res:
-                    registrar_log(st.session_state.usuario, "RECARGA", f"+{qtd} para {u_destino}")
-                    st.success("Feito!")
+            if st.button("Confirmar Recarga", use_container_width=True):
+                if adicionar_creditos_firebase(u_destino, qtd):
+                    registrar_log_firebase(st.session_state.usuario, "RECARGA", f"+{qtd} para {u_destino}")
+                    st.success("Créditos adicionados!")
                     time.sleep(1); st.rerun()
 
-        # --- ABA 2: VISUALIZAR BANCO (O Pulo do Gato) ---
+        # --- ABA 2: VISUALIZAR BANCO ---
         with st.sidebar.expander("👥 Base de Usuários"):
-            df_view = obter_dados_usuarios(tempo_cache=0)
-            st.dataframe(df_view[['nome', 'creditos', 'nivel']], hide_index=True)
+            df_view = obter_dados_usuarios_firebase() 
+            if not df_view.empty:
+                st.dataframe(df_view[['nome', 'creditos', 'nivel']], hide_index=True)
 
-        # --- ABA 3: AUDITORIA (VAR) ---
-        with st.sidebar.expander("📜 Últimos Logs"):
-            try:
-                df_logs_view = conn.read(worksheet="logs", ttl=0)
-                st.table(df_logs_view.tail(5)) 
-            except:
-                st.info("Aba 'logs' não encontrada no Sheets.")
+        # --- ABA 3: AUDITORIA (VAR DO SISTEMA) ---
+        with st.sidebar.expander("📜 Histórico de Logs", expanded=False):
+            if st.button("🔄 Atualizar Logs"):
+                st.rerun()
+
+            df_logs = obter_logs_firebase(limite=30)
+            
+            if not df_logs.empty:
+                # Define a ordem das colunas para a tabela ficar intuitiva
+                st.dataframe(
+                    df_logs[['data_hora', 'usuario', 'acao', 'detalhe']], 
+                    hide_index=True,
+                    use_container_width=True
+                )
+            else:
+                st.info("Nenhuma atividade registrada ainda.")
         
         # --- ABA 4: COMUNICAÇÃO (BROADCAST) ---
-        # ESTE BLOCO AGORA ESTÁ FORA DO EXCEPT
-        with st.sidebar.expander("📢 Mural de Avisos"):
-            msg_atual = gerenciar_broadcast()
-            nova_msg = st.text_area("Nova mensagem:", value=msg_atual, height=100)
-            
-            if st.button("Atualizar Mural", use_container_width=True):
-                gerenciar_broadcast(nova_msg)
-                registrar_log(st.session_state.usuario, "BROADCAST", "Atualizou o aviso global")
+        with st.sidebar.expander("📢 Mural"):
+            msg_atu = gerenciar_broadcast_firebase()
+            nova_m = st.text_area("Aviso:", value=msg_atu)
+            if st.button("Atualizar Mural"):
+                gerenciar_broadcast_firebase(nova_m)
                 st.success("Mural atualizado!")
-                time.sleep(1); st.rerun()
 
 # --- ABA 5: CADASTRAR NOVO USUÁRIO ---
         with st.sidebar.expander("👤 Novo Usuário"):
-            novo_n = st.text_input("Login (sem espaços):", key="new_u").strip().lower()
-            novo_e = st.text_input("Nome de Exibição:", key="new_e")
-            novo_c = st.number_input("Créditos Iniciais:", min_value=0, value=10, key="new_c")
-            
-            if st.button("Criar Conta", use_container_width=True):
-                df_u = obter_dados_usuarios(tempo_cache=0)
-                if novo_n in df_u['nome'].str.lower().values:
-                    st.error("Usuário já existe!")
-                else:
-                    nova_linha = pd.DataFrame([{
-                        "nome": novo_n, 
-                        "exibicao": novo_e, 
-                        "creditos": novo_c, 
-                        "nivel": 0
-                    }])
-                    df_final = pd.concat([df_u, nova_linha], ignore_index=True)
-                    conn.update(data=df_final)
-                    registrar_log(st.session_state.usuario, "CADASTRO", f"Criou o usuário {novo_n}")
-                    st.success(f"Usuário {novo_n} criado!")
-                    time.sleep(1); st.rerun()
+            new_login = st.text_input("Login:", key="new_u").strip().lower()
+            new_name = st.text_input("Nome de Exibição:", key="new_e")
+            if st.button("Criar Usuário"):
+                db.collection('usuarios').document(new_login).set({
+                    "nome": new_login, "exibicao": new_name, "creditos": 10, "nivel": 0
+                })
+                registrar_log_firebase(st.session_state.usuario, "CADASTRO", f"Criou {new_login}")
+                st.success("Criado!")
+
+if st.sidebar.button("Sair", use_container_width=True):
+        # Limpa TUDO da memória da sessão atual
+        for key in list(st.session_state.keys()):
+            del st.session_state[key]
+        
+        # Reinicia o app do zero
+        st.rerun()
                     
 # --- VARIÁVEIS DE CONTROLE PARA O RESTO DO APP ---
 autorizado = st.session_state.logado
@@ -359,7 +379,7 @@ def extrair_probabilidades(texto_analise):
 # -----------------------------
 st.title("⚽ FOOBOT PRO v5 - FOOBOT I.A")
 # EXIBIÇÃO DO BROADCAST COM EMOJI ALEATÓRIO
-msg_global = gerenciar_broadcast()
+msg_global = gerenciar_broadcast_firebase()
 if msg_global:
     # Lista de emojis para dar aquele grau no visual
     emojis = ["📢", "🔔", "⚠️", "🔥", "🚀", "💡", "⚽", "🏆"]
@@ -385,7 +405,8 @@ with col1:
         date = st.date_input(
             "📅 Selecione a data para buscar jogos:", 
             value=None, # Deixa vazio inicialmente para não disparar a busca automática
-            format="DD/MM/YYYY"
+            format="DD/MM/YYYY",
+            on_change=limpar_analise
         )
 
         if date:
@@ -416,10 +437,10 @@ with col1:
                                 })
 
             if all_matches:
-                sel_league = st.selectbox("Escolha a Liga", ["🌍 Todas"] + leagues_found)
+                sel_league = st.selectbox("Escolha a Liga", ["🌍 Todas"] + leagues_found, on_change=limpar_analise)
                 filtered = [m for m in all_matches if sel_league == "🌍 Todas" or m['league_display'] == sel_league]
                 match_names = [m['name'] for m in filtered]
-                selected_name = st.selectbox("Escolha o Jogo", match_names)
+                selected_name = st.selectbox("Escolha o Jogo", match_names, on_change=limpar_analise)
                 
                 jogo = next(item for item in filtered if item["name"] == selected_name)
                 st.info(f"📍 **Liga:** {jogo['league_name']}\n\n⏰ **Início:** {jogo['horario']}")
@@ -445,10 +466,10 @@ with col2:
                 # 1. Guarda a análise no estado da sessão
                 st.session_state.ultima_analise = resultado 
                 # 2. Desconta o crédito na planilha
-                descontar_credito(st.session_state.usuario)
+                descontar_credito_firebase(st.session_state.usuario)
                 # 3. Força o recarregamento para atualizar o saldo na sidebar
                 # --- AQUI É ONDE O LOG É GRAVADO NA CONSULTA! ---
-                registrar_log(st.session_state.usuario, "CONSULTA", f"{jogo['home']} x {jogo['away']}")
+                registrar_log_firebase(st.session_state.usuario, "CONSULTA", f"{jogo['home']} x {jogo['away']}")
                 st.rerun() 
             else:
                 st.error(resultado)
@@ -498,39 +519,27 @@ if autorizado and st.session_state.get("nivel") == 1:
     st.subheader("📊 Painel de Controle Analítico")
     
     try:
-        df_stats = conn.read(worksheet="logs", ttl="5m")
+        # Busca logs do Firebase
+        logs_ref = db.collection('logs').order_by("data_hora", direction=firestore.Query.DESCENDING).limit(100)
+        logs_docs = logs_ref.stream()
+        logs_list = [d.to_dict() for d in logs_docs]
+        df_stats = pd.DataFrame(logs_list)
         
         if not df_stats.empty:
-            df_stats['data_hora'] = pd.to_datetime(df_stats['data_hora'], format="%d/%m/%Y %H:%M:%S")
-            
-            # AJUSTE PARA O EIXO X NÃO APARECER COM NÚMEROS ESTRANHOS
+            # Firebase já retorna datetime, só formatamos para o gráfico
             df_stats['dia'] = df_stats['data_hora'].dt.strftime('%d/%m/%Y')
             
             col_graph1, col_graph2 = st.columns(2)
-            
             with col_graph1:
                 contagem_dia = df_stats.groupby('dia').size().reset_index(name='total')
-                fig_vol = px.line(contagem_dia, x='dia', y='total', 
-                                 title="📈 Tendência de Uso (Acessos Diários)",
-                                 line_shape="spline", template="plotly_dark")
-                
-                # AQUI É O SEGREDO: Força o eixo X a ser lido como texto/categoria
-                fig_vol.update_xaxes(type='category') 
-                fig_vol.update_traces(line_color='#00ff00', line_width=3)
+                fig_vol = px.line(contagem_dia, x='dia', y='total', title="📈 Uso Diário", template="plotly_dark")
+                fig_vol.update_xaxes(type='category')
                 st.plotly_chart(fig_vol, use_container_width=True)
             
             with col_graph2:
                 dist_acao = df_stats['acao'].value_counts().reset_index()
                 dist_acao.columns = ['Ação', 'Qtd']
-                fig_pizza = px.pie(dist_acao, values='Qtd', names='Ação', 
-                                  title="🍕 Distribuição de Operações",
-                                  color_discrete_sequence=px.colors.sequential.RdBu)
-                fig_pizza.update_traces(textposition='inside', textinfo='percent+label')
+                fig_pizza = px.pie(dist_acao, values='Qtd', names='Ação', title="🍕 Operações")
                 st.plotly_chart(fig_pizza, use_container_width=True)
-
-            st.markdown("#### 🏆 Top Usuários mais Ativos")
-            ranking = df_stats['usuario'].value_counts().head(10).reset_index()
-            ranking.columns = ['Usuário', 'Total de Ações']
-            st.table(ranking)
     except Exception as e:
         st.error(f"Erro ao carregar dashboard: {e}")
