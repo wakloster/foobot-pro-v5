@@ -4,3 +4,4 @@ google-genai
 pandas
 plotly
 pytz
+st-gsheets-connection

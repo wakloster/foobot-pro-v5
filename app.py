@@ -6,6 +6,7 @@ import time
 from google import genai
 import pandas as pd
 import plotly.express as px
+from streamlit_gsheets import GSheetsConnection
 
 # -----------------------------
 # CONFIGURAÇÕES INICIAIS
@@ -21,6 +22,42 @@ MAX_GOALS = 8
 SIMULATIONS = 50000
 HOME_ADVANTAGE = 1.10
 
+
+# 1. Cria a conexão usando as chaves [connections.gsheets] do seu secrets.toml
+conn = st.connection("gsheets", type=GSheetsConnection)
+
+def obter_dados_usuarios(tempo_cache="1m"):
+    try:
+        # 2. Lê a planilha usando a URL que está dentro da seção [connections.gsheets]
+        # ttl="1m" mantém um cache de 1 minuto para não estourar a cota do Google
+        df = conn.read(ttl=tempo_cache)
+        return df
+    except Exception as e:
+        st.error(f"Erro ao carregar créditos: {e}")
+        return pd.DataFrame()
+    
+def descontar_credito(nome_usuario):
+    try:
+        # Lê os dados sem cache (ttl=0) para pegar o saldo mais atualizado
+        df_atual = conn.read(ttl=0)
+        
+        # Localiza o índice do usuário
+        idx = df_atual[df_atual['nome'].str.lower() == nome_usuario.lower()].index
+        
+        if not idx.empty:
+            saldo_atual = int(df_atual.loc[idx, 'creditos'].values[0])
+            if saldo_atual > 0:
+                novo_saldo = saldo_atual - 1
+                df_atual.loc[idx, 'creditos'] = novo_saldo
+                
+                # Salva a planilha atualizada no Google Sheets
+                conn.update(data=df_atual)
+                return novo_saldo
+        return None
+    except Exception as e:
+        st.error(f"Erro ao atualizar saldo: {e}")
+        return None
+
 LEAGUES = {
     "🇬🇧 Premier League": "PL",
     "🇪🇸 La Liga": "PD",
@@ -31,22 +68,69 @@ LEAGUES = {
 }
 
 # -----------------------------
-# SIDEBAR (GESTÃO DE ACESSO E CRÉDITOS)
+# SIDEBAR (LOGIN, GESTÃO DE ACESSO E CRÉDITOS)
 # -----------------------------
-with st.sidebar:
-    st.header("👤 Área do Usuário")
-    st.write("---")
+# --- INICIALIZAÇÃO DO ESTADO (Coloque no topo do script) ---
+if "logado" not in st.session_state:
+    st.session_state.logado = False
+    st.session_state.usuario = None
+    st.session_state.nome_exibicao = ""
+    if "ultima_analise" not in st.session_state:
+        st.session_state.ultima_analise = None
+
+# --- SIDEBAR ESTILIZADA ---
+st.sidebar.markdown("### 👤 Área do Usuário")
+st.sidebar.markdown("---")
+
+# Verificação de Estado para alternar entre Tela de Login e Dashboard
+if not st.session_state.logado:
+    # --- TELA DE LOGIN ---
+    nome_input_login = st.sidebar.text_input("Digite seu usuário:", key="login_input").strip().lower()
     
-    # Simulação de Login (Futuramente você pode integrar com um banco de dados)
-    user_status = st.toggle("Simular Login", value=True)
+    if st.sidebar.button("🚀 Entrar", use_container_width=True):
+        df_usuarios = obter_dados_usuarios()
+        if not df_usuarios.empty and nome_input_login in df_usuarios['nome'].str.lower().values:
+            user_row = df_usuarios.loc[df_usuarios['nome'].str.lower() == nome_input_login]
+            creditos_val = int(user_row['creditos'].values[0])
+            
+            if creditos_val > 0:
+                st.session_state.logado = True
+                st.session_state.usuario = nome_input_login
+                # Busca nome de exibição na planilha ou usa o login formatado
+                st.session_state.nome_exibicao = user_row['exibicao'].values[0] if 'exibicao' in user_row.columns else nome_input_login.capitalize()
+                st.rerun()
+            else:
+                st.sidebar.warning("⚠️ Você não possui créditos suficientes.")
+        else:
+            st.sidebar.error("❌ Usuário não encontrado na base.")
+else:
+    # --- TELA LOGADA (IGUAL À IMAGEM) ---
+    st.sidebar.success(f"Logado como: **{st.session_state.nome_exibicao}**")
     
-    if user_status:
-        st.success("Logado como: **Wesley Kloster**")
-        st.metric(label="🪙 Créditos Disponíveis", value="45", delta="-1")
-        st.info("Plano: **Premium Gold**")
-    else:
-        st.warning("Você não está logado.")
-        st.button("Fazer Login")
+    st.sidebar.markdown("#### 🪙 Créditos Disponíveis")
+    
+    # Busca saldo em tempo real para exibir no contador grande
+    df_vivos = obter_dados_usuarios(tempo_cache=0)
+    saldo_atual = int(df_vivos.loc[df_vivos['nome'].str.lower() == st.session_state.usuario, 'creditos'].values[0])
+    
+    # Layout de colunas para o contador e o indicador de débito
+    col_saldo, col_debito = st.sidebar.columns([1, 1])
+    with col_saldo:
+        st.title(f"{saldo_atual}")
+    with col_debito:
+        st.markdown("\n") # Espaçador para alinhar
+        st.error("🔻 -1")
+    
+    st.sidebar.info("Plano: **Premium Gold**")
+    
+    if st.sidebar.button("🚪 Sair / Logout", use_container_width=True):
+        st.session_state.logado = False
+        st.session_state.usuario = None
+        st.rerun()
+
+# --- VARIÁVEIS DE CONTROLE PARA O RESTO DO APP ---
+autorizado = st.session_state.logado
+nome_input = st.session_state.usuario # Mantém compatibilidade com a função de desconto
 
 # -----------------------------
 # LOGICA DE IA (VERSÃO CORRIGIDA 2026)
@@ -54,8 +138,9 @@ with st.sidebar:
 def realizar_analise_gemini(home, away, league):
     # Lista de chaves (adicione as chaves novas que você criar aqui)
     LISTA_CHAVES = [
-        st.secrets["GEMINI_CHAVE_1"],  # Nome: Default Gemini Project
-        st.secrets["GEMINI_CHAVE_2"]  # Nome: FOOTBOT PRO V5 com IA
+        st.secrets["GEMINI_CHAVE_1"],
+        st.secrets["GEMINI_CHAVE_2"],
+        st.secrets["GEMINI_CHAVE_3"],
     ]
     
     prompt = f"""
@@ -87,7 +172,7 @@ def realizar_analise_gemini(home, away, league):
     """
     
     # Modelos baseados no  dashboard e na versão atual (Gemini 3)
-    modelos_disponiveis = ["gemini-3-flash", "gemini-2.5-flash"]
+    modelos_disponiveis = ["gemini-2.5-flash"]
 
     # O código vai tentar cada chave até uma funcionar
     for api_key in LISTA_CHAVES:
@@ -174,49 +259,66 @@ with col1:
 
     if all_matches:
         sel_league = st.selectbox("Escolha a Liga", ["🌍 Todas"] + leagues_found)
-        
         filtered = [m for m in all_matches if sel_league == "🌍 Todas" or m['league_display'] == sel_league]
-        
         match_names = [m['name'] for m in filtered]
         selected_name = st.selectbox("Escolha o Jogo", match_names)
         
         jogo = next(item for item in filtered if item["name"] == selected_name)
-        
         st.info(f"📍 **Liga:** {jogo['league_name']}\n\n⏰ **Início:** {jogo['horario']}")
         
-        btn_analise = st.button("🚀 GERAR ANÁLISE PREMIUM", use_container_width=True)
+        # --- BLOQUEIO DE SEGURANÇA ---
+        if autorizado:
+            btn_analise = st.button("🚀 GERAR ANÁLISE PREMIUM", use_container_width=True)
+        else:
+            st.error("🔒 Faça login com um usuário válido para liberar a análise.")
+            btn_analise = False
     else:
         st.warning("Nenhum jogo encontrado.")
         btn_analise = False
 
 with col2:
     st.subheader("📊 Análise de Inteligência")
-    if btn_analise:
+    
+    # Se o botão for clicado e estiver autorizado
+    if btn_analise and autorizado:
         with st.spinner(f"Analisando a partida entre {jogo['home']} x {jogo['away']}..."):
             resultado = realizar_analise_gemini(jogo['home'], jogo['away'], jogo['league_name'])
             
-            # 1. Exibe a análise em texto
-            st.markdown(resultado)
-            
-            # SÓ GERA O GRÁFICO SE A ANÁLISE FOR BEM-SUCEDIDA
-            # Verificamos se o texto contém "Probabilidades", que é parte do nosso prompt de sucesso
-            if "Probabilidades" in resultado:
-                probs = extrair_probabilidades(resultado)
-                df_probs = pd.DataFrame({
-                    'Resultado': ['Casa', 'Empate', 'Fora'],
-                    'Probabilidade (%)': probs
-                })
+            if "atingiram o limite" not in resultado:
+                # 1. Guarda a análise no estado da sessão
+                st.session_state.ultima_analise = resultado 
+                # 2. Desconta o crédito na planilha
+                descontar_credito(st.session_state.usuario)
+                # 3. Força o recarregamento para atualizar o saldo na sidebar
+                st.rerun() 
+            else:
+                st.error(resultado)
+                st.info("🛡️ Nenhum crédito foi descontado.")
 
-                fig = px.bar(
-                    df_probs, x='Probabilidade (%)', y='Resultado', orientation='h',
-                    text='Probabilidade (%)', color='Resultado',
-                    color_discrete_map={'Casa': '#2ecc71', 'Empate': '#95a5a6', 'Fora': '#e74c3c'},
-                    title="📊 Probabilidades Visuais"
-                )
-                
-                fig.update_layout(showlegend=False, height=250, margin=dict(l=10, r=10, t=50, b=20), xaxis_range=[0, 110])
-                fig.update_traces(texttemplate='%{text}%', textposition='outside')
-                st.plotly_chart(fig, use_container_width=True)
+    # EXIBIÇÃO DA ANÁLISE (Fica fora do if btn_analise para persistir após o rerun)
+    if st.session_state.ultima_analise:
+        st.markdown(st.session_state.ultima_analise)
+        
+        # Gera o gráfico baseado na última análise guardada
+        if "Probabilidades" in st.session_state.ultima_analise:
+            probs = extrair_probabilidades(st.session_state.ultima_analise)
+            df_probs = pd.DataFrame({
+                'Resultado': ['Casa', 'Empate', 'Fora'],
+                'Probabilidade (%)': probs
+            })
+
+            fig = px.bar(
+                df_probs, x='Probabilidade (%)', y='Resultado', orientation='h',
+                text='Probabilidade (%)', color='Resultado',
+                color_discrete_map={'Casa': '#2ecc71', 'Empate': '#95a5a6', 'Fora': '#e74c3c'},
+                title="📊 Probabilidades Visuais"
+            )
             
+            fig.update_layout(showlegend=False, height=250, margin=dict(l=10, r=10, t=50, b=20), xaxis_range=[0, 110])
+            fig.update_traces(texttemplate='%{text}%', textposition='outside')
+            st.plotly_chart(fig, use_container_width=True)
+    
+    elif not autorizado:
+        st.warning("Aguardando login para liberar os dados de I.A.")
     else:
-        st.write("Selecione um jogo para gerar as estatíscas completas da partida.")
+        st.write("Selecione um jogo para gerar as estatísticas completas.")
