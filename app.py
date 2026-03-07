@@ -155,7 +155,7 @@ if not st.session_state.logado:
     nome_input_login = st.sidebar.text_input("Digite seu usuário:", key="login_input").strip().lower()
     
     if st.sidebar.button("🚀 Entrar", use_container_width=True):
-        df_usuarios = obter_dados_usuarios()
+        df_usuarios = obter_dados_usuarios(tempo_cache="10m")
         if not df_usuarios.empty and nome_input_login in df_usuarios['nome'].str.lower().values:
             user_row = df_usuarios.loc[df_usuarios['nome'].str.lower() == nome_input_login]
             creditos_val = int(user_row['creditos'].values[0])
