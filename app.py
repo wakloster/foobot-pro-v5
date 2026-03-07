@@ -234,6 +234,28 @@ else:
                 st.success("Mural atualizado!")
                 time.sleep(1); st.rerun()
 
+# --- ABA 5: CADASTRAR NOVO USUÁRIO ---
+        with st.sidebar.expander("👤 Novo Usuário"):
+            novo_n = st.text_input("Login (sem espaços):", key="new_u").strip().lower()
+            novo_e = st.text_input("Nome de Exibição:", key="new_e")
+            novo_c = st.number_input("Créditos Iniciais:", min_value=0, value=10, key="new_c")
+            
+            if st.button("Criar Conta", use_container_width=True):
+                df_u = obter_dados_usuarios(tempo_cache=0)
+                if novo_n in df_u['nome'].str.lower().values:
+                    st.error("Usuário já existe!")
+                else:
+                    nova_linha = pd.DataFrame([{
+                        "nome": novo_n, 
+                        "exibicao": novo_e, 
+                        "creditos": novo_c, 
+                        "nivel": 0
+                    }])
+                    df_final = pd.concat([df_u, nova_linha], ignore_index=True)
+                    conn.update(data=df_final)
+                    registrar_log(st.session_state.usuario, "CADASTRO", f"Criou o usuário {novo_n}")
+                    st.success(f"Usuário {novo_n} criado!")
+                    time.sleep(1); st.rerun()
 # --- VARIÁVEIS DE CONTROLE PARA O RESTO DO APP ---
 autorizado = st.session_state.logado
 nome_input = st.session_state.usuario # Mantém compatibilidade com a função de desconto
