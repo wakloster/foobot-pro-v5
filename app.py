@@ -256,6 +256,7 @@ else:
                     registrar_log(st.session_state.usuario, "CADASTRO", f"Criou o usuário {novo_n}")
                     st.success(f"Usuário {novo_n} criado!")
                     time.sleep(1); st.rerun()
+                    
 # --- VARIÁVEIS DE CONTROLE PARA O RESTO DO APP ---
 autorizado = st.session_state.logado
 nome_input = st.session_state.usuario # Mantém compatibilidade com a função de desconto
@@ -488,3 +489,48 @@ with col2:
         st.warning("Aguardando login para liberar os dados de I.A.")
     else:
         st.write("Selecione um jogo para gerar as estatísticas completas.")
+        
+# -----------------------------
+# DASHBOARD ESTATÍSTICO (RODAPÉ ADMIN)
+# -----------------------------
+if autorizado and st.session_state.get("nivel") == 1:
+    st.markdown("---")
+    st.subheader("📊 Painel de Controle Analítico")
+    
+    try:
+        df_stats = conn.read(worksheet="logs", ttl="5m")
+        
+        if not df_stats.empty:
+            df_stats['data_hora'] = pd.to_datetime(df_stats['data_hora'], format="%d/%m/%Y %H:%M:%S")
+            
+            # AJUSTE PARA O EIXO X NÃO APARECER COM NÚMEROS ESTRANHOS
+            df_stats['dia'] = df_stats['data_hora'].dt.strftime('%d/%m/%Y')
+            
+            col_graph1, col_graph2 = st.columns(2)
+            
+            with col_graph1:
+                contagem_dia = df_stats.groupby('dia').size().reset_index(name='total')
+                fig_vol = px.line(contagem_dia, x='dia', y='total', 
+                                 title="📈 Tendência de Uso (Acessos Diários)",
+                                 line_shape="spline", template="plotly_dark")
+                
+                # AQUI É O SEGREDO: Força o eixo X a ser lido como texto/categoria
+                fig_vol.update_xaxes(type='category') 
+                fig_vol.update_traces(line_color='#00ff00', line_width=3)
+                st.plotly_chart(fig_vol, use_container_width=True)
+            
+            with col_graph2:
+                dist_acao = df_stats['acao'].value_counts().reset_index()
+                dist_acao.columns = ['Ação', 'Qtd']
+                fig_pizza = px.pie(dist_acao, values='Qtd', names='Ação', 
+                                  title="🍕 Distribuição de Operações",
+                                  color_discrete_sequence=px.colors.sequential.RdBu)
+                fig_pizza.update_traces(textposition='inside', textinfo='percent+label')
+                st.plotly_chart(fig_pizza, use_container_width=True)
+
+            st.markdown("#### 🏆 Top Usuários mais Ativos")
+            ranking = df_stats['usuario'].value_counts().head(10).reset_index()
+            ranking.columns = ['Usuário', 'Total de Ações']
+            st.table(ranking)
+    except Exception as e:
+        st.error(f"Erro ao carregar dashboard: {e}")
