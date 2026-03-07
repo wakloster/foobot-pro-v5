@@ -155,7 +155,7 @@ def realizar_analise_gemini(home, away, league):
 
     🎯 **Veredito Final**
     * {home} XxX {away}
-    (Retorne o RESULTADO EXATO com maior confiança estatística)
+    (Retorne o RESULTADO EXATO com maior confiança estatística, nada além disso, não escreva mais nada além do resultado.)
 
     📊 **Probabilidades estimadas**
     * Casa: %
@@ -169,6 +169,10 @@ def realizar_analise_gemini(home, away, league):
 
     🔎 **Justificativa Técnica:**
     * (5 a 6 linhas explicando a lógica, focando em desfalques, mando de campo e necessidade de vitória)
+    
+    ⚠️ **Nota de Responsabilidade:**
+    * Esta análise é baseada em probabilidades estatísticas e dados históricos. No futebol, não existem garantias. 
+    Aposte com responsabilidade e nunca utilize valores que possam comprometer sua saúde financeira.
     """
     
     # Modelos baseados no  dashboard e na versão atual (Gemini 3)
