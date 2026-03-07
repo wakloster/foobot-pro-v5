@@ -22,6 +22,9 @@ MAX_GOALS = 8
 SIMULATIONS = 50000
 HOME_ADVANTAGE = 1.10
 
+# ------------------------
+# AQUI COMEÇA A DEFINIÇÃO DE TODAS AS FUNÇÕES
+# ------------------------
 
 # 1. Cria a conexão usando as chaves [connections.gsheets] do seu secrets.toml
 conn = st.connection("gsheets", type=GSheetsConnection)
@@ -59,25 +62,42 @@ def descontar_credito(nome_usuario):
         return None
 
 def adicionar_creditos(nome_usuario, quantidade):
-        try:
-            # 1. Lê os dados mais recentes sem cache
-            df_atual = conn.read(ttl=0)
+    try:
+        # 1. Lê os dados mais recentes sem cache
+        df_atual = conn.read(ttl=0)
+        
+        # 2. Localiza o usuário (case-insensitive)
+        idx = df_atual[df_atual['nome'].str.lower() == nome_usuario.lower()].index
+        
+        if not idx.empty:
+            saldo_atual = int(df_atual.loc[idx, 'creditos'].values[0])
+            novo_saldo = saldo_atual + quantidade
+            df_atual.loc[idx, 'creditos'] = novo_saldo
             
-            # 2. Localiza o usuário (case-insensitive)
-            idx = df_atual[df_atual['nome'].str.lower() == nome_usuario.lower()].index
-            
-            if not idx.empty:
-                saldo_atual = int(df_atual.loc[idx, 'creditos'].values[0])
-                novo_saldo = saldo_atual + quantidade
-                df_atual.loc[idx, 'creditos'] = novo_saldo
-                
-                # 3. Atualiza a planilha no Google Sheets
-                conn.update(data=df_atual)
-                return novo_saldo
-            return None
-        except Exception as e:
-            st.error(f"Erro ao adicionar créditos: {e}")
-            return None
+            # 3. Atualiza a planilha no Google Sheets
+            conn.update(data=df_atual)
+            return novo_saldo
+        return None
+    except Exception as e:
+        st.error(f"Erro ao adicionar créditos: {e}")
+        return None
+
+def registrar_log(usuario, acao, detalhe):
+    try:
+        # Tenta ler a aba 'logs'. Certifique-se que ela existe no seu Sheets!
+        df_logs = conn.read(worksheet="logs", ttl=0)
+        novo_log = pd.DataFrame([{
+            "data_hora": datetime.datetime.now(pytz.timezone("America/Sao_Paulo")).strftime("%d/%m/%Y %H:%M:%S"),
+            "usuario": usuario,
+            "acao": acao,
+            "detalhe": detalhe
+        }])
+        df_logs = pd.concat([df_logs, novo_log], ignore_index=True)
+        conn.update(worksheet="logs", data=df_logs)
+    except Exception as e:
+        # Se der erro (ex: aba não existe), ele não trava o app, mas avisa no log do console
+        print(f"Erro no log: {e}")
+        pass
 
 LEAGUES = {
     "🇧🇷 Brasileirão": "BSA",         # Prioridade máxima!
@@ -151,31 +171,31 @@ else:
     # Esta parte DEVE vir antes do botão de Logout para garantir a renderização
     if st.session_state.get("nivel") == 1:
         st.sidebar.markdown("---")
-        st.sidebar.markdown("### 🛠️ Painel Admin")
+        st.sidebar.markdown("### 🛠️ Painel Master Admin")
         
-        with st.sidebar.expander("➕ Adicionar Créditos", expanded=False):
-            u_destino = st.text_input("Usuário destino:", key="admin_user_dest")
-            qtd = st.number_input("Qtd de créditos:", min_value=1, step=10, key="admin_qtd")
-            
-            if st.sidebar.button("Confirmar Recarga", key="btn_recarga", use_container_width=True):
-                if u_destino and qtd:
-                    resultado = adicionar_creditos(u_destino, qtd)
-                    if resultado is not None:
-                        st.sidebar.success(f"Sucesso! {u_destino} agora tem {resultado}")
-                        time.sleep(2)
-                        st.rerun()
-                    else:
-                        st.sidebar.error("Usuário não encontrado.")
-                else:
-                    st.sidebar.warning("Preencha todos os campos.")
+        # --- ABA 1: GESTÃO DE CRÉDITOS ---
+        with st.sidebar.expander("➕ Recarga Rápida", expanded=False):
+            u_destino = st.text_input("Usuário:", key="adm_u")
+            qtd = st.number_input("Quantidade:", min_value=1, step=5, key="adm_q")
+            if st.button("Confirmar", use_container_width=True):
+                res = adicionar_creditos(u_destino, qtd)
+                if res:
+                    registrar_log(st.session_state.usuario, "RECARGA", f"+{qtd} para {u_destino}")
+                    st.success("Feito!")
+                    time.sleep(1); st.rerun()
 
-    st.sidebar.markdown("---")
+        # --- ABA 2: VISUALIZAR BANCO (O Pulo do Gato) ---
+        with st.sidebar.expander("👥 Base de Usuários"):
+            df_view = obter_dados_usuarios(tempo_cache=0)
+            st.dataframe(df_view[['nome', 'creditos', 'nivel']], hide_index=True)
 
-    # --- BOTÃO DE LOGOUT (SEMPRE POR ÚLTIMO) ---
-    if st.sidebar.button("🚪 Sair / Logout", use_container_width=True):
-        st.session_state.logado = False
-        st.session_state.usuario = None
-        st.rerun()
+        # --- ABA 3: AUDITORIA (VAR) ---
+        with st.sidebar.expander("📜 Últimos Logs"):
+            try:
+                df_logs_view = conn.read(worksheet="logs", ttl=0)
+                st.table(df_logs_view.tail(5)) # Mostra os últimos 5 movimentos
+            except:
+                st.info("Aba 'logs' não encontrada no Sheets.")
 
 # --- VARIÁVEIS DE CONTROLE PARA O RESTO DO APP ---
 autorizado = st.session_state.logado
@@ -358,6 +378,8 @@ with col2:
                 # 2. Desconta o crédito na planilha
                 descontar_credito(st.session_state.usuario)
                 # 3. Força o recarregamento para atualizar o saldo na sidebar
+                # --- AQUI É ONDE O LOG É GRAVADO NA CONSULTA! ---
+                registrar_log(st.session_state.usuario, "CONSULTA", f"{jogo['home']} x {jogo['away']}")
                 st.rerun() 
             else:
                 st.error(resultado)
