@@ -263,11 +263,23 @@ else:
             new_login = st.text_input("Login:", key="new_u").strip().lower()
             new_name = st.text_input("Nome de Exibição:", key="new_e")
             if st.button("Criar Usuário"):
-                db.collection('usuarios').document(new_login).set({
-                    "nome": new_login, "exibicao": new_name, "creditos": 10, "nivel": 0
-                })
-                registrar_log_firebase(st.session_state.usuario, "CADASTRO", f"Criou {new_login}")
-                st.success("Criado!")
+                if new_login and new_name:
+                    # PULO DO GATO: Referencia o documento e tenta dar um .get()
+                    user_ref = db.collection('usuarios').document(new_login)
+                    if user_ref.get().exists:
+                        st.error(f"❌ Erro: O usuário '{new_login}' já existe na base!")
+                    else:
+                        # Só cria se o .get().exists for falso
+                        user_ref.set({
+                            "nome": new_login, 
+                            "exibicao": new_name, 
+                            "creditos": 10, 
+                            "nivel": 0
+                        })
+                        registrar_log_firebase(st.session_state.usuario, "CADASTRO", f"Criou {new_login}")
+                        st.success(f"✅ Usuário {new_login} criado com sucesso!")
+                else:
+                    st.warning("Preencha todos os campos, porra!")
 
 if st.sidebar.button("Sair", use_container_width=True):
         # Limpa TUDO da memória da sessão atual
