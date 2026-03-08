@@ -101,15 +101,16 @@ def adicionar_creditos_firebase(nome_usuario, quantidade):
     try:
         user_ref = db.collection('usuarios').document(nome_usuario.lower())
         doc = user_ref.get()
+        # TRAVA: Só prossegue se o documento existir
         if doc.exists:
             saldo_atual = int(doc.to_dict().get('creditos', 0))
             novo_saldo = saldo_atual + quantidade
             user_ref.update({'creditos': novo_saldo})
-            return novo_saldo
-        return None
+            return True, novo_saldo
+        else:
+            return False, "Usuário não encontrado"
     except Exception as e:
-        st.error(f"Erro na recarga Firebase: {e}")
-        return None
+        return False, str(e)
 
 def registrar_log_firebase(usuario, acao, detalhe):
     """Registra logs como novos documentos em uma coleção, sem limite de quota!"""
@@ -191,7 +192,7 @@ if not st.session_state.logado:
             else:
                 st.sidebar.warning("⚠️ Você não possui créditos suficientes.")
         else:
-            st.sidebar.error("❌ Usuário não encontrado no Firebase.")
+            st.sidebar.error("❌ Usuário não encontrado.")
 else:
     # --- TELA LOGADA (SIDEBAR) ---
     st.sidebar.success(f"Olá **{st.session_state.nome_exibicao}**")
@@ -222,10 +223,18 @@ else:
             u_destino = st.text_input("Para:", key="adm_u").strip().lower()
             qtd = st.number_input("Quantidade:", min_value=1, step=5, key="adm_q")
             if st.button("Confirmar Recarga", use_container_width=True):
-                if adicionar_creditos_firebase(u_destino, qtd):
-                    registrar_log_firebase(st.session_state.usuario, "RECARGA", f"+{qtd} para {u_destino}")
-                    st.success("Créditos adicionados!")
-                    time.sleep(1); st.rerun()
+                if u_destino:
+                    sucesso, resultado = adicionar_creditos_firebase(u_destino, qtd)
+                    
+                    if sucesso:
+                        registrar_log_firebase(st.session_state.usuario, "RECARGA", f"+{qtd} para {u_destino}")
+                        st.success(f"✅ Feito! Novo saldo de {u_destino}: {resultado}")
+                        time.sleep(1)
+                        st.rerun()
+                    else:
+                        st.error(f"❌ Erro: {resultado}")
+                else:
+                    st.warning("Digite o login do caboco, home!")
 
         # --- ABA 2: VISUALIZAR BANCO ---
         with st.sidebar.expander("👥 Base de Usuários"):
@@ -273,7 +282,7 @@ else:
                         user_ref.set({
                             "nome": new_login, 
                             "exibicao": new_name, 
-                            "creditos": 10, 
+                            "creditos": 5, 
                             "nivel": 0
                         })
                         registrar_log_firebase(st.session_state.usuario, "CADASTRO", f"Criou {new_login}")
