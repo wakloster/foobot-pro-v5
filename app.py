@@ -151,6 +151,28 @@ LEAGUES = {
     "🇫🇷 Ligue 1": "FL1"
 }
 
+@st.dialog("Confirmar Transação")
+def modal_confirmar_recarga(usuario, quantidade):
+    st.warning(f"Você está prestes a adicionar **{quantidade}** créditos para **{usuario}**.")
+    st.write("Deseja prosseguir com a operação?")
+    
+    col_sim, col_nao = st.columns(2)
+    
+    with col_sim:
+        if st.button("✅ Confirmar", use_container_width=True):
+            sucesso, resultado = adicionar_creditos_firebase(usuario, quantidade)
+            if sucesso:
+                registrar_log_firebase(st.session_state.usuario, "RECARGA", f"+{quantidade} para {usuario}")
+                st.success("Créditos injetados!")
+                time.sleep(1)
+                st.rerun()
+            else:
+                st.error(f"Erro: {resultado}")
+                
+    with col_nao:
+        if st.button("❌ Cancelar", use_container_width=True):
+            st.rerun()
+
 # -----------------------------
 # SIDEBAR (LOGIN, GESTÃO DE ACESSO E CRÉDITOS)
 # -----------------------------
@@ -221,19 +243,20 @@ else:
         # --- ABA 1: GESTÃO DE CRÉDITOS ---
         with st.sidebar.expander("➕ Recarga Rápida", expanded=False):
             u_destino = st.text_input("Para:", key="adm_u").strip().lower()
-            qtd = st.number_input("Quantidade:", min_value=1, step=5, key="adm_q")
-            if st.button("Confirmar Recarga", use_container_width=True):
-                if u_destino:
-                    sucesso, resultado = adicionar_creditos_firebase(u_destino, qtd)
-                    
-                    if sucesso:
-                        registrar_log_firebase(st.session_state.usuario, "RECARGA", f"+{qtd} para {u_destino}")
-                        st.success(f"✅ Feito! Novo saldo de {u_destino}: {resultado}")
-                        time.sleep(1)
-                        st.rerun()
+            qtd = st.number_input("Quantidade:", min_value=5, step=5, key="adm_q")
+
+            if st.button("🚀 Iniciar Recarga", use_container_width=True):
+                if u_destino: # <--- O sistema só verifica isso DEPOIS do clique
+                    # 🔍 VALIDAÇÃO ANTES DE ABRIR O MODAL
+                    user_ref = db.collection('usuarios').document(u_destino)
+                    if user_ref.get().exists:
+                        # Se existe, aí sim abre o pop-up
+                        modal_confirmar_recarga(u_destino, qtd)
                     else:
-                        st.error(f"❌ Erro: {resultado}")
+                        # Se não existe, erro na sidebar
+                        st.error(f"❌ Usuário '{u_destino}' não encontrado!")
                 else:
+                    # Esta mensagem só vai aparecer se clicar com o campo vazio
                     st.warning("Digite o login do caboco, home!")
 
         # --- ABA 2: VISUALIZAR BANCO ---
