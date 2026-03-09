@@ -87,6 +87,11 @@ def descontar_credito_firebase(nome_usuario):
         doc = user_ref.get()
         
         if doc.exists:
+            dados = doc.to_dict()
+            # Agora olhamos para a flag 'vitalicio'
+            if dados.get('vitalicio', False) == True:
+                return "VITALÍCIO"
+            
             saldo_atual = int(doc.to_dict().get('creditos', 0))
             if saldo_atual > 0:
                 novo_saldo = saldo_atual - 1
@@ -201,12 +206,18 @@ if not st.session_state.logado:
         if doc.exists:
             user_data = doc.to_dict()
             creditos_val = int(user_data.get('creditos', 0))
+            # Verifica se é vitalício logo no login
+            is_vitalicio = user_data.get('vitalicio', False)
             
-            if creditos_val > 0:
+            # Se for vitalício OU tiver créditos, ele entra
+            if is_vitalicio or creditos_val > 0:
                 st.session_state.logado = True
                 st.session_state.usuario = nome_input_login
                 st.session_state.nivel = int(user_data.get('nivel', 0))
                 st.session_state.nome_exibicao = user_data.get('exibicao', nome_input_login.capitalize())
+                
+                # Salva o estado vitalício na sessão para facilitar o visual depois
+                st.session_state.vitalicio = is_vitalicio
                 
                 # Log de sucesso (Já usando a função nova de log do Firebase)
                 registrar_log_firebase(nome_input_login, "LOGIN", "Acessou o sistema via Firebase")
@@ -223,16 +234,27 @@ else:
     # Busca saldo em tempo real no FIREBASE
     user_ref = db.collection('usuarios').document(st.session_state.usuario)
     doc = user_ref.get()
-    saldo_atual = int(doc.to_dict().get('creditos', 0)) if doc.exists else 0
-    
-    col_saldo, col_debito = st.sidebar.columns([1, 1])
-    with col_saldo:
-        st.title(f"{saldo_atual}")
-    with col_debito:
-        st.markdown("\n") 
-        st.error("🔻 -1")
-    
-    st.sidebar.info("Plano: **Premium Gold**")
+    dados_usuario = doc.to_dict() if doc.exists else {}
+
+    # ♾️ Verifica se é vitalício
+    is_vitalicio = dados_usuario.get('vitalicio', False)
+    saldo_atual = int(dados_usuario.get('creditos', 0))
+
+    if is_vitalicio:
+        # Visual para quem é VIP
+        st.sidebar.success("🏆 Acesso: **VITALÍCIO**")
+        st.sidebar.markdown("### ♾️ Ilimitado")
+    else:
+        # Visual padrão para quem usa créditos
+        col_saldo, col_debito = st.sidebar.columns([1, 1])
+        with col_saldo:
+            st.sidebar.markdown("#### 🪙 Saldo")
+            st.title(f"{saldo_atual}")
+        with col_debito:
+            st.markdown("\n") 
+            st.error("🔻 -1")
+        
+        st.sidebar.info("Plano: **Gold Básico**")
 
     # --- ÁREA ADMINISTRATIVA (ESTRUTURA CORRIGIDA) ---
     # Esta parte DEVE vir antes do botão de Logout para garantir a renderização
@@ -294,9 +316,13 @@ else:
         with st.sidebar.expander("👤 Novo Usuário"):
             new_login = st.text_input("Login:", key="new_u").strip().lower()
             new_name = st.text_input("Nome de Exibição:", key="new_e")
+            
+            # Checkbox para definir se é VIP/Vitalício
+            is_vip = st.checkbox("Usuário Vitalício?")
+            
             if st.button("Criar Usuário"):
                 if new_login and new_name:
-                    # PULO DO GATO: Referencia o documento e tenta dar um .get()
+                    # Referencia o documento e tenta dar um .get()
                     user_ref = db.collection('usuarios').document(new_login)
                     if user_ref.get().exists:
                         st.error(f"❌ Erro: O usuário '{new_login}' já existe na base!")
@@ -305,8 +331,9 @@ else:
                         user_ref.set({
                             "nome": new_login, 
                             "exibicao": new_name, 
-                            "creditos": 5, 
-                            "nivel": 0
+                            "creditos": 0 if is_vip else 5, 
+                            "nivel": 0,          # 0 = Cliente (Não vê Admin)
+                            "vitalicio": is_vip  # True = Não gasta créditos
                         })
                         registrar_log_firebase(st.session_state.usuario, "CADASTRO", f"Criou {new_login}")
                         st.success(f"✅ Usuário {new_login} criado com sucesso!")
