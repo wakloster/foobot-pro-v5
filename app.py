@@ -196,6 +196,7 @@ def gerenciar_broadcast_firebase(nova_msg=None):
         return ""
 
 LEAGUES = {
+    "🇧🇷 Brasileirão Série A": "BSA",
     "🇪🇺 Champions League": "CL",
     "🇬🇧 Premier League": "PL",
     "🇪🇸 La Liga": "PD",
@@ -578,14 +579,17 @@ with col1:
             data_formatada = date.strftime("%d/%m/%Y")
             
             with st.spinner(f"Buscando partidas do dia {data_formatada}..."):
-                # Busca API 1 (Europa)
+                # Busca API 1 (Europa e Brasileirão Série A)
                 for league_name, league_code in LEAGUES.items():
-                    matches = get_matches(league_code, date_str)
-                    if matches:
+                    matches_api1 = get_matches(league_code, date_str)
+                    if matches_api1:
                         if league_name not in leagues_found: leagues_found.append(league_name)
-                        for m in matches:
+                        for m in matches_api1:
+                            # Conversão de UTC para Brasília
                             utc_dt = datetime.datetime.strptime(m["utcDate"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=pytz.utc)
                             brasil_dt = utc_dt.astimezone(fuso_br)
+                            
+                            # Só adiciona se o jogo for de fato no dia selecionado (fuso corrigido)
                             if brasil_dt.date() == date:
                                 all_matches.append({
                                     "horario": brasil_dt.strftime("%H:%M"),
@@ -596,10 +600,18 @@ with col1:
                                     "name": f"[ {brasil_dt.strftime('%H:%M')} ] {m['homeTeam']['name']} x {m['awayTeam']['name']}"
                                 })
 
-                # Busca API 2 (Brasil)
-                jogos_br = buscar_jogos_brasil_v3(date_str)
-                for jb in jogos_br:
-                    if not any(jb['home'] in m['home'] for m in all_matches):
+                # Busca API 2 (Série B, Estaduais e Copas do Brasil)
+                jogos_br_api2 = buscar_jogos_brasil_v3(date_str)
+                for jb in jogos_br_api2:
+                    # 🛡️ TRAVA DE DUPLICIDADE: 
+                    # Se o jogo já veio da API 1 (Série A), ignora na API 2
+                    is_duplicado = any(jb['home'].lower() in m['home'].lower() for m in all_matches)
+                    
+                    # 🛡️ FILTRO DE LIGA:
+                    # Garante que não estamos pegando a Série A na API 2 para não dar conflito
+                    is_serie_a = "serie a" in jb['league_name'].lower()
+                    
+                    if not is_duplicado and not is_serie_a:
                         if jb['league_display'] not in leagues_found: leagues_found.append(jb['league_display'])
                         all_matches.append(jb)
 
