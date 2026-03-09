@@ -401,6 +401,10 @@ if st.sidebar.button("Sair", use_container_width=True):
 autorizado = st.session_state.logado
 nome_input = st.session_state.usuario # Mantém compatibilidade com a função de desconto
 
+# 🛠️ INICIALIZAÇÃO DE SEGURANÇA (Para evitar NameError)
+ja_pagou = False
+jogo_id_atual = None
+
 # -----------------------------
 # LOGICA DE IA (VERSÃO CORRIGIDA 2026)
 # -----------------------------
