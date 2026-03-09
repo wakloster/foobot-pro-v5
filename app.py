@@ -244,37 +244,40 @@ st.sidebar.markdown("---")
 
 # Verificação de Estado para alternar entre Tela de Login e Dashboard
 if not st.session_state.logado:
-    # --- TELA DE LOGIN ---
+# --- TELA DE LOGIN ---
     nome_input_login = st.sidebar.text_input("Digite seu usuário:", key="login_input").strip().lower()
-    
-    if st.sidebar.button("🚀 Entrar", use_container_width=True):
-        # BUSCA DIRETA NO FIREBASE
-        user_ref = db.collection('usuarios').document(nome_input_login)
-        doc = user_ref.get()
-        
-        if doc.exists:
-            user_data = doc.to_dict()
-            creditos_val = float(user_data.get('creditos', 0))
-            # Verifica se é vitalício logo no login
-            is_vitalicio = user_data.get('vitalicio', False)
+
+if st.sidebar.button("🚀 Entrar", use_container_width=True):
+    # 🛡️ TRAVA DE SEGURANÇA: Verifica se o campo não está vazio
+    if not nome_input_login:
+        st.sidebar.warning("⚠️ Por favor, digite seu usuário antes de entrar.")
+    else:
+        # Só faz a chamada ao Firebase se houver texto
+        try:
+            user_ref = db.collection('usuarios').document(nome_input_login)
+            doc = user_ref.get()
             
-            # Se for vitalício OU tiver créditos, ele entra
-            if is_vitalicio or creditos_val > 0:
-                st.session_state.logado = True
-                st.session_state.usuario = nome_input_login
-                st.session_state.nivel = int(user_data.get('nivel', 0))
-                st.session_state.nome_exibicao = user_data.get('exibicao', nome_input_login.capitalize())
+            if doc.exists:
+                user_data = doc.to_dict()
+                creditos_val = float(user_data.get('creditos', 0))
+                is_vitalicio = user_data.get('vitalicio', False)
                 
-                # Salva o estado vitalício na sessão para facilitar o visual depois
-                st.session_state.vitalicio = is_vitalicio
-                
-                # Log de sucesso (Já usando a função nova de log do Firebase)
-                registrar_log_firebase(nome_input_login, "LOGIN", "Acessou o sistema via Firebase")
-                st.rerun()
+                if is_vitalicio or creditos_val > 0:
+                    st.session_state.logado = True
+                    st.session_state.usuario = nome_input_login
+                    st.session_state.nivel = int(user_data.get('nivel', 0))
+                    st.session_state.nome_exibicao = user_data.get('exibicao', nome_input_login.capitalize())
+                    st.session_state.vitalicio = is_vitalicio
+                    
+                    registrar_log_firebase(nome_input_login, "LOGIN", "Acessou o sistema")
+                    st.rerun()
+                else:
+                    st.sidebar.warning("⚠️ Você não possui créditos suficientes.")
             else:
-                st.sidebar.warning("⚠️ Você não possui créditos suficientes.")
-        else:
-            st.sidebar.error("❌ Usuário não encontrado.")
+                st.sidebar.error("❌ Usuário não encontrado.")
+        except Exception as e:
+            # Captura qualquer outro erro inesperado do Firebase
+            st.sidebar.error(f"Erro ao conectar com o servidor: {e}")
 else:
     # --- TELA LOGADA (SIDEBAR) ---
     st.sidebar.success(f"Olá **{st.session_state.nome_exibicao}**")
