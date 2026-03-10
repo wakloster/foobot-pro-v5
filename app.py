@@ -292,8 +292,15 @@ if not st.session_state.get("logado", False):
                             'exibicao', nome_input_login.capitalize())
                         st.session_state.vitalicio = is_vitalicio
 
+                        # --- EFEITO DE BOAS-VINDAS ---
+                        st.balloons()  # Solta balões na tela
+                        st.sidebar.success(
+                            f"🚀 Bem-vindo ao time, {st.session_state.nome_exibicao}!")
+
                         registrar_log_firebase(
                             nome_input_login, "LOGIN", "Acessou o sistema")
+                        # Aguarda 2 segundos para o usuário ver a mensagem antes de atualizar a página
+                        time.sleep(3)
                         st.rerun()
                     else:
                         st.sidebar.warning(
