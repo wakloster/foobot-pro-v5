@@ -707,6 +707,14 @@ with col1:
                 if esta_bloqueado:
                     st.button("🚫 ANÁLISE BLOQUEADA", disabled=True,
                               use_container_width=True)
+                    # --- MENSAGEM COM O MOTIVO (O QUE VOCÊ TINHA NO OUTRO PC) ---
+                    st.error("📉 **Por que esta partida está bloqueada?**")
+                    st.info(
+                        "O FOOBOT PRO realiza apenas **análises pré-jogo**. "
+                        "Como esta partida já iniciou ou encerrou, os dados em tempo real "
+                        "viciariam a probabilidade da nossa Inteligência Artificial. "
+                        "\n\n**Dica:** Selecione jogos que ainda não começaram para obter previsões precisas."
+                    )
                 elif ja_pagou:
                     st.success("✅ Você já possui acesso a esta análise!")
                     # O botão vira apenas um gatilho visual, pois a análise aparecerá na Col 2
