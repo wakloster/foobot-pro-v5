@@ -355,6 +355,38 @@ else:
         st.sidebar.error("🔻 Consumo Variável")
 
         st.sidebar.info("Plano: **Gold Básico**")
+        
+        # --- SISTEMA DE RECARGA TRIBOPAY ---
+        st.sidebar.markdown("---")
+        with st.sidebar.expander("💳 Adquirir Créditos", expanded=False):
+            st.caption("Valor por crédito: R$ 0,75")
+            
+            link_base = "https://pay.tribopay.com.br/SEU_ID_AQUI" # Substitua pelo seu link de produto
+            u_ref = st.session_state.usuario
+            
+            # Opções de pacotes fixos
+            col1, col2, col3 = st.columns(3)
+            if col1.button("🪙 10", help="R$ 7,50"):
+                st.link_button("Pagar R$ 7,50", f"{link_base}?external_id={u_ref}&amount=7.50")
+            
+            if col2.button("🪙 20", help="R$ 15,00"):
+                st.link_button("Pagar R$ 15,00", f"{link_base}?external_id={u_ref}&amount=15.00")
+                
+            if col3.button("🪙 50", help="R$ 37,50"):
+                st.link_button("Pagar R$ 37,50", f"{link_base}?external_id={u_ref}&amount=37.50")
+
+            st.markdown("---")
+            
+            # Input para créditos personalizados
+            qtd_custom = st.number_input("Quantidade personalizada:", min_value=1.0, step=1.0, value=10.0)
+            valor_total = qtd_custom * 0.75
+            
+            st.write(f"Total: **R$ {valor_total:.2f}**")
+            
+            if st.button("Gerar Pagamento Personalizado", use_container_width=True):
+                # Enviamos o valor calculado via parâmetro para a TriboPay
+                url_final = f"{link_base}?external_id={u_ref}&amount={valor_total:.2f}"
+                st.link_button("Confirmar e Pagar", url_final, type="primary", use_container_width=True)
 
     # --- ÁREA ADMINISTRATIVA (ESTRUTURA CORRIGIDA) ---
     # Esta parte DEVE vir antes do botão de Logout para garantir a renderização
