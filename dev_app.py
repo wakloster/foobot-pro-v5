@@ -350,6 +350,8 @@ else:
     else:
         # Visual padrão para quem usa créditos
         st.sidebar.markdown(f"### 🪙 Saldo: {saldo_atual:.1f}")
+        if st.sidebar.button("🔄 Atualizar Saldo"):
+            st.rerun()
 
         # Opcional: Se quiser manter o selo de "Variável" de forma discreta
         st.sidebar.error("🔻 Consumo Variável")
@@ -361,32 +363,29 @@ else:
         with st.sidebar.expander("💳 Adquirir Créditos", expanded=False):
             st.caption("Valor por crédito: R$ 0,75")
             
-            link_base = "https://pay.tribopay.com.br/SEU_ID_AQUI" # Substitua pelo seu link de produto
-            u_ref = st.session_state.usuario
+            link_10  = "https://go.tribopay.com.br/kqvky"
+            link_20  = "https://go.tribopay.com.br/txnqc"
+            link_50  = "https://go.tribopay.com.br/1d1cp"
+            link_100 = "https://go.tribopay.com.br/gyggn"
             
-            # Opções de pacotes fixos
-            col1, col2, col3 = st.columns(3)
-            if col1.button("🪙 10", help="R$ 7,50"):
-                st.link_button("Pagar R$ 7,50", f"{link_base}?external_id={u_ref}&amount=7.50")
+            u_ref = st.session_state.usuario # O login do usuário logado
             
-            if col2.button("🪙 20", help="R$ 15,00"):
-                st.link_button("Pagar R$ 15,00", f"{link_base}?external_id={u_ref}&amount=15.00")
-                
-            if col3.button("🪙 50", help="R$ 37,50"):
-                st.link_button("Pagar R$ 37,50", f"{link_base}?external_id={u_ref}&amount=37.50")
+            # Estilo de botões em coluna para os pacotes menores
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("🪙 10 (R$ 7,50)", use_container_width=True):
+                    st.link_button("Pagar", f"{link_10}?external_id={u_ref}")
+                if st.button("🪙 50 (R$ 37,50)", use_container_width=True):
+                    st.link_button("Pagar", f"{link_50}?external_id={u_ref}")
+                    
+            with col2:
+                if st.button("🪙 20 (R$ 15,00)", use_container_width=True):
+                    st.link_button("Pagar", f"{link_20}?external_id={u_ref}")
+                # BOTÃO NOVO: 100 CRÉDITOS
+                if st.button("🪙 100 (R$ 75,00)", use_container_width=True):
+                    st.link_button("Pagar", f"{link_100}?external_id={u_ref}")
 
-            st.markdown("---")
-            
-            # Input para créditos personalizados
-            qtd_custom = st.number_input("Quantidade personalizada:", min_value=1.0, step=1.0, value=10.0)
-            valor_total = qtd_custom * 0.75
-            
-            st.write(f"Total: **R$ {valor_total:.2f}**")
-            
-            if st.button("Gerar Pagamento Personalizado", use_container_width=True):
-                # Enviamos o valor calculado via parâmetro para a TriboPay
-                url_final = f"{link_base}?external_id={u_ref}&amount={valor_total:.2f}"
-                st.link_button("Confirmar e Pagar", url_final, type="primary", use_container_width=True)
+            st.info("💡 O crédito cai na conta automaticamente após a aprovação do pagamento.")
 
     # --- ÁREA ADMINISTRATIVA (ESTRUTURA CORRIGIDA) ---
     # Esta parte DEVE vir antes do botão de Logout para garantir a renderização
