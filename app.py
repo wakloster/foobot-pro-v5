@@ -13,10 +13,12 @@ from firebase_admin import credentials, firestore
 # -----------------------------
 # CONFIGURAÇÕES INICIAIS
 # -----------------------------
-st.set_page_config(page_title="FOOBOT PRO v5 - FOOBOT I.A", page_icon="⚽", layout="wide")
+st.set_page_config(page_title="FOOBOT PRO v5 - FOOBOT I.A",
+                   page_icon="⚽", layout="wide")
 
 if "historico_analises" not in st.session_state:
-    st.session_state.historico_analises = {} # Dicionário: {ID_DO_JOGO: TEXTO_DA_ANALISE}
+    # Dicionário: {ID_DO_JOGO: TEXTO_DA_ANALISE}
+    st.session_state.historico_analises = {}
 
 
 # APIs e Credenciais
@@ -47,21 +49,24 @@ db = firestore.client()
 # FUNÇÕES DE APOIO
 # -----------------------------
 
+
 def limpar_analise():
     if "ultima_analise" in st.session_state:
         st.session_state.ultima_analise = None
-        
+
+
 def extrair_probabilidades(texto_analise):
     # Procura por números seguidos de % no texto
     import re
     numeros = re.findall(r'(\d+)%', texto_analise)
     if len(numeros) >= 3:
         return [int(numeros[0]), int(numeros[1]), int(numeros[2])]
-    return [33, 33, 34] # Fallback caso não encontre
+    return [33, 33, 34]  # Fallback caso não encontre
 
 # -----------------------------
 # FUNÇÕES FIREBASE (MIGRAÇÃO)
 # -----------------------------
+
 
 def obter_logs_firebase(limite=50):
     try:
@@ -69,37 +74,40 @@ def obter_logs_firebase(limite=50):
         logs_ref = db.collection('logs').order_by(
             "data_hora", direction=firestore.Query.DESCENDING
         ).limit(limite)
-        
+
         docs = logs_ref.stream()
         logs_list = []
-        
+
         for doc in docs:
             d = doc.to_dict()
             if 'data_hora' in d:
                 # Converte o timestamp do Firebase para o horário de Brasília
-                d['data_hora'] = d['data_hora'].astimezone(pytz.timezone("America/Sao_Paulo")).strftime("%d/%m/%Y %H:%M:%S")
+                d['data_hora'] = d['data_hora'].astimezone(pytz.timezone(
+                    "America/Sao_Paulo")).strftime("%d/%m/%Y %H:%M:%S")
             logs_list.append(d)
-            
+
         return pd.DataFrame(logs_list)
     except Exception as e:
         return pd.DataFrame()
+
 
 def obter_dados_usuarios_firebase():
     """Busca todos os usuários da coleção 'usuarios' no Firestore"""
     try:
         users_ref = db.collection('usuarios')
         docs = users_ref.stream()
-        
+
         usuarios_list = []
         for doc in docs:
             dados = doc.to_dict()
             dados['id'] = doc.id  # Mantém o ID do documento
             usuarios_list.append(dados)
-            
+
         return pd.DataFrame(usuarios_list)
     except Exception as e:
         st.error(f"Erro ao carregar usuários do Firebase: {e}")
         return pd.DataFrame()
+
 
 def descontar_credito_firebase(nome_usuario, jogo_id):
     """Desconta 1 crédito e registra o ID do jogo no perfil do usuário"""
@@ -107,14 +115,15 @@ def descontar_credito_firebase(nome_usuario, jogo_id):
         # No Firebase, usamos o nome em minúsculo como ID do documento para facilitar
         user_ref = db.collection('usuarios').document(nome_usuario.lower())
         doc = user_ref.get()
-        
+
         if doc.exists:
             dados = doc.to_dict()
             # Se for vitalício, apenas registra o jogo sem descontar nada
             if dados.get('vitalicio', False):
-                user_ref.update({"analises_liberadas": firestore.ArrayUnion([jogo_id])})
+                user_ref.update(
+                    {"analises_liberadas": firestore.ArrayUnion([jogo_id])})
                 return "VITALÍCIO"
-            
+
             saldo_atual = float(doc.to_dict().get('creditos', 0))
             if saldo_atual > 0:
                 novo_saldo = saldo_atual - 1
@@ -128,7 +137,8 @@ def descontar_credito_firebase(nome_usuario, jogo_id):
     except Exception as e:
         st.error(f"Erro ao atualizar saldo no Firebase: {e}")
         return None
-    
+
+
 def descontar_reanalise_firebase(nome_usuario, jogo_id):
     """Desconta apenas meio crédito para reanálise, exceto para vitalícios"""
     try:
@@ -137,9 +147,9 @@ def descontar_reanalise_firebase(nome_usuario, jogo_id):
         if doc.exists:
             dados = doc.to_dict()
             # 🛡️ TRAVA DE SEGURANÇA: Se for vitalício, sai sem descontar
-            if dados.get('vitalicio', False): 
+            if dados.get('vitalicio', False):
                 return "VITALÍCIO"
-            
+
             saldo_atual = float(dados.get('creditos', 0))
             if saldo_atual >= 0.5:
                 preco_reanalise = 0.5
@@ -150,7 +160,8 @@ def descontar_reanalise_firebase(nome_usuario, jogo_id):
     except Exception as e:
         print(f"Erro no desconto: {e}")
         return None
-    
+
+
 def adicionar_creditos_firebase(nome_usuario, quantidade):
     try:
         user_ref = db.collection('usuarios').document(nome_usuario.lower())
@@ -166,10 +177,11 @@ def adicionar_creditos_firebase(nome_usuario, quantidade):
     except Exception as e:
         return False, str(e)
 
+
 def registrar_log_firebase(usuario, acao, detalhe):
     """Registra logs como novos documentos em uma coleção, sem limite de quota!"""
     try:
-        log_ref = db.collection('logs').document() # Gera um ID automático
+        log_ref = db.collection('logs').document()  # Gera um ID automático
         log_ref.set({
             "data_hora": datetime.datetime.now(pytz.timezone("America/Sao_Paulo")),
             "usuario": usuario,
@@ -179,21 +191,24 @@ def registrar_log_firebase(usuario, acao, detalhe):
     except Exception as e:
         print(f"Erro no log Firebase: {e}")
 
+
 def gerenciar_broadcast_firebase(nova_msg=None):
     """Gerencia a mensagem global em um documento fixo de configuração"""
     try:
         config_ref = db.collection('config').document('broadcast')
-        
+
         if nova_msg is not None:
-            config_ref.set({'valor': str(nova_msg).strip() if nova_msg else ""})
+            config_ref.set(
+                {'valor': str(nova_msg).strip() if nova_msg else ""})
             return nova_msg
-        
+
         doc = config_ref.get()
         if doc.exists:
             return doc.to_dict().get('valor', "")
         return ""
     except:
         return ""
+
 
 LEAGUES = {
     "🇧🇷 Brasileirão Série A": "BSA",
@@ -205,27 +220,32 @@ LEAGUES = {
     "🇫🇷 Ligue 1": "FL1"
 }
 
+
 @st.dialog("Confirmar Transação")
 def modal_confirmar_recarga(usuario, quantidade):
-    st.warning(f"Você está prestes a adicionar **{quantidade}** créditos para **{usuario}**.")
+    st.warning(
+        f"Você está prestes a adicionar **{quantidade}** créditos para **{usuario}**.")
     st.write("Deseja prosseguir com a operação?")
-    
+
     col_sim, col_nao = st.columns(2)
-    
+
     with col_sim:
         if st.button("✅ Confirmar", use_container_width=True):
-            sucesso, resultado = adicionar_creditos_firebase(usuario, quantidade)
+            sucesso, resultado = adicionar_creditos_firebase(
+                usuario, quantidade)
             if sucesso:
-                registrar_log_firebase(st.session_state.usuario, "RECARGA", f"+{quantidade} para {usuario}")
+                registrar_log_firebase(
+                    st.session_state.usuario, "RECARGA", f"+{quantidade} para {usuario}")
                 st.success("Créditos injetados!")
                 time.sleep(1)
                 st.rerun()
             else:
                 st.error(f"Erro: {resultado}")
-                
+
     with col_nao:
         if st.button("❌ Cancelar", use_container_width=True):
             st.rerun()
+
 
 # -----------------------------
 # SIDEBAR (LOGIN, GESTÃO DE ACESSO E CRÉDITOS)
@@ -243,46 +263,50 @@ st.sidebar.markdown("### 👤 Área do Usuário")
 st.sidebar.markdown("---")
 
 # Verificação de Estado para alternar entre Tela de Login e Dashboard
-if not st.session_state.logado:
-# --- TELA DE LOGIN ---
-    nome_input_login = st.sidebar.text_input("Digite seu usuário:", key="login_input").strip().lower()
+if not st.session_state.get("logado", False):
+    # --- TELA DE LOGIN (Só aparece se NÃO estiver logado) ---
+    nome_input_login = st.sidebar.text_input(
+        "Digite seu usuário:", key="login_input").strip().lower()
 
-if st.sidebar.button("🚀 Entrar", use_container_width=True):
-    # 🛡️ TRAVA DE SEGURANÇA: Verifica se o campo não está vazio
-    if not nome_input_login:
-        st.sidebar.warning("⚠️ Por favor, digite seu usuário antes de entrar.")
-    else:
-        # Só faz a chamada ao Firebase se houver texto
-        try:
-            user_ref = db.collection('usuarios').document(nome_input_login)
-            doc = user_ref.get()
-            
-            if doc.exists:
-                user_data = doc.to_dict()
-                creditos_val = float(user_data.get('creditos', 0))
-                is_vitalicio = user_data.get('vitalicio', False)
-                
-                if is_vitalicio or creditos_val > 0:
-                    st.session_state.logado = True
-                    st.session_state.usuario = nome_input_login
-                    st.session_state.nivel = int(user_data.get('nivel', 0))
-                    st.session_state.nome_exibicao = user_data.get('exibicao', nome_input_login.capitalize())
-                    st.session_state.vitalicio = is_vitalicio
-                    
-                    registrar_log_firebase(nome_input_login, "LOGIN", "Acessou o sistema")
-                    st.rerun()
+    if st.sidebar.button("🚀 Entrar", use_container_width=True):
+        # 🛡️ TRAVA DE SEGURANÇA: Verifica se o campo não está vazio
+        if not nome_input_login:
+            st.sidebar.warning(
+                "⚠️ Por favor, digite seu usuário antes de entrar.")
+        else:
+            # Só faz a chamada ao Firebase se houver texto
+            try:
+                user_ref = db.collection('usuarios').document(nome_input_login)
+                doc = user_ref.get()
+
+                if doc.exists:
+                    user_data = doc.to_dict()
+                    creditos_val = float(user_data.get('creditos', 0))
+                    is_vitalicio = user_data.get('vitalicio', False)
+
+                    if is_vitalicio or creditos_val > 0:
+                        st.session_state.logado = True
+                        st.session_state.usuario = nome_input_login
+                        st.session_state.nivel = int(user_data.get('nivel', 0))
+                        st.session_state.nome_exibicao = user_data.get(
+                            'exibicao', nome_input_login.capitalize())
+                        st.session_state.vitalicio = is_vitalicio
+
+                        registrar_log_firebase(
+                            nome_input_login, "LOGIN", "Acessou o sistema")
+                        st.rerun()
+                    else:
+                        st.sidebar.warning(
+                            "⚠️ Você não possui créditos suficientes.")
                 else:
-                    st.sidebar.warning("⚠️ Você não possui créditos suficientes.")
-            else:
-                st.sidebar.error("❌ Usuário não encontrado.")
-        except Exception as e:
-            # Captura qualquer outro erro inesperado do Firebase
-            st.sidebar.error(f"Erro ao conectar com o servidor: {e}")
+                    st.sidebar.error("❌ Usuário não encontrado.")
+            except Exception as e:
+                # Captura qualquer outro erro inesperado do Firebase
+                st.sidebar.error(f"Erro ao conectar com o servidor: {e}")
 else:
     # --- TELA LOGADA (SIDEBAR) ---
     st.sidebar.success(f"Olá **{st.session_state.nome_exibicao}**")
-    st.sidebar.markdown("#### 🪙 Créditos Disponíveis")
-    
+
     # Busca saldo em tempo real no FIREBASE
     user_ref = db.collection('usuarios').document(st.session_state.usuario)
     doc = user_ref.get()
@@ -292,21 +316,19 @@ else:
     is_vitalicio = dados_usuario.get('vitalicio', False)
     saldo_atual = float(dados_usuario.get('creditos', 0))
 
+    st.sidebar.markdown("---")
+
     if is_vitalicio:
         # Visual para quem é VIP
-        st.sidebar.markdown("### ♾️ Ilimitado")
+        st.sidebar.markdown("### ♾️ Créditos Ilimitados")
         st.sidebar.success("🏆 Acesso: **VITALÍCIO**")
     else:
         # Visual padrão para quem usa créditos
-        col_saldo, col_debito = st.sidebar.columns([1, 1])
-        with col_saldo:
-            st.sidebar.markdown("#### 🪙 Saldo")
-            # Exibe com 1 casa decimal (ex: 10.5)
-            st.title(f"{saldo_atual:.1f}")
-        with col_debito:
-            st.markdown("\n") 
-            st.error("🔻 Variável")
-        
+        st.sidebar.markdown(f"### 🪙 Saldo: {saldo_atual:.1f}")
+
+        # Opcional: Se quiser manter o selo de "Variável" de forma discreta
+        st.sidebar.error("🔻 Consumo Variável")
+
         st.sidebar.info("Plano: **Gold Básico**")
 
     # --- ÁREA ADMINISTRATIVA (ESTRUTURA CORRIGIDA) ---
@@ -314,14 +336,15 @@ else:
     if st.session_state.get("nivel") == 1:
         st.sidebar.markdown("---")
         st.sidebar.markdown("### 🛠️ Painel Master Admin")
-        
+
         # --- ABA 1: GESTÃO DE CRÉDITOS ---
         with st.sidebar.expander("➕ Recarga Rápida", expanded=False):
             u_destino = st.text_input("Para:", key="adm_u").strip().lower()
-            qtd = st.number_input("Quantidade:", min_value=5, step=5, key="adm_q")
+            qtd = st.number_input(
+                "Quantidade:", min_value=5, step=5, key="adm_q")
 
             if st.button("🚀 Iniciar Recarga", use_container_width=True):
-                if u_destino: # <--- O sistema só verifica isso DEPOIS do clique
+                if u_destino:  # <--- O sistema só verifica isso DEPOIS do clique
                     # 🔍 VALIDAÇÃO ANTES DE ABRIR O MODAL
                     user_ref = db.collection('usuarios').document(u_destino)
                     if user_ref.get().exists:
@@ -336,9 +359,10 @@ else:
 
         # --- ABA 2: VISUALIZAR BANCO ---
         with st.sidebar.expander("👥 Base de Usuários"):
-            df_view = obter_dados_usuarios_firebase() 
+            df_view = obter_dados_usuarios_firebase()
             if not df_view.empty:
-                st.dataframe(df_view[['nome', 'creditos', 'nivel']], hide_index=True)
+                st.dataframe(
+                    df_view[['nome', 'creditos', 'nivel']], hide_index=True)
 
         # --- ABA 3: AUDITORIA (VAR DO SISTEMA) ---
         with st.sidebar.expander("📜 Histórico de Logs", expanded=False):
@@ -346,17 +370,17 @@ else:
                 st.rerun()
 
             df_logs = obter_logs_firebase(limite=30)
-            
+
             if not df_logs.empty:
                 # Define a ordem das colunas para a tabela ficar intuitiva
                 st.dataframe(
-                    df_logs[['data_hora', 'usuario', 'acao', 'detalhe']], 
+                    df_logs[['data_hora', 'usuario', 'acao', 'detalhe']],
                     hide_index=True,
                     use_container_width=True
                 )
             else:
                 st.info("Nenhuma atividade registrada ainda.")
-        
+
         # --- ABA 4: COMUNICAÇÃO (BROADCAST) ---
         with st.sidebar.expander("📢 Mural"):
             msg_atu = gerenciar_broadcast_firebase()
@@ -369,41 +393,45 @@ else:
         with st.sidebar.expander("👤 Novo Usuário"):
             new_login = st.text_input("Login:", key="new_u").strip().lower()
             new_name = st.text_input("Nome de Exibição:", key="new_e")
-            
+
             # Checkbox para definir se é VIP/Vitalício
             is_vip = st.checkbox("Usuário Vitalício?")
-            
+
             if st.button("Criar Usuário"):
                 if new_login and new_name:
                     # Referencia o documento e tenta dar um .get()
                     user_ref = db.collection('usuarios').document(new_login)
                     if user_ref.get().exists:
-                        st.error(f"❌ Erro: O usuário '{new_login}' já existe na base!")
+                        st.error(
+                            f"❌ Erro: O usuário '{new_login}' já existe na base!")
                     else:
                         # Só cria se o .get().exists for falso
                         user_ref.set({
-                            "nome": new_login, 
-                            "exibicao": new_name, 
-                            "creditos": 0 if is_vip else 5, 
+                            "nome": new_login,
+                            "exibicao": new_name,
+                            "creditos": 0 if is_vip else 5,
                             "nivel": 0,          # 0 = Cliente (Não vê Admin)
                             "vitalicio": is_vip  # True = Não gasta créditos
                         })
-                        registrar_log_firebase(st.session_state.usuario, "CADASTRO", f"Criou {new_login}")
-                        st.success(f"✅ Usuário {new_login} criado com sucesso!")
+                        registrar_log_firebase(
+                            st.session_state.usuario, "CADASTRO", f"Criou {new_login}")
+                        st.success(
+                            f"✅ Usuário {new_login} criado com sucesso!")
                 else:
                     st.warning("Preencha todos os campos, porra!")
 
 if st.sidebar.button("Sair", use_container_width=True):
-        # Limpa TUDO da memória da sessão atual
-        for key in list(st.session_state.keys()):
-            del st.session_state[key]
-        
-        # Reinicia o app do zero
-        st.rerun()
-                    
+    # Limpa TUDO da memória da sessão atual
+    for key in list(st.session_state.keys()):
+        del st.session_state[key]
+
+    # Reinicia o app do zero
+    st.rerun()
+
 # --- VARIÁVEIS DE CONTROLE PARA O RESTO DO APP ---
 autorizado = st.session_state.logado
-nome_input = st.session_state.usuario # Mantém compatibilidade com a função de desconto
+# Mantém compatibilidade com a função de desconto
+nome_input = st.session_state.usuario
 
 # 🛠️ INICIALIZAÇÃO DE SEGURANÇA (Para evitar NameError)
 ja_pagou = False
@@ -412,6 +440,8 @@ jogo_id_atual = None
 # -----------------------------
 # LOGICA DE IA (VERSÃO CORRIGIDA 2026)
 # -----------------------------
+
+
 def realizar_analise_gemini(home, away, league):
     # Lista de chaves (adicione as chaves novas que você criar aqui)
     LISTA_CHAVES = [
@@ -422,18 +452,18 @@ def realizar_analise_gemini(home, away, league):
         st.secrets["GEMINI_CHAVE_5"],
         st.secrets["GEMINI_CHAVE_6"],
     ]
-    
+
     # 🕵️ BUSCA O PROMPT SECRETO DOS SECRETS (Escondido de curiosos)
     template_prompt = st.secrets["PROMPT_FOOTBOT_PRO"]
-    
+
     # Formata o prompt com os dados do jogo atual
     prompt_final = template_prompt.format(
-        home=home, 
-        away=away, 
-        league=league, 
+        home=home,
+        away=away,
+        league=league,
         data_atual=datetime.date.today()
     )
-    
+
     # Modelos baseados no  dashboard e na versão atual (Gemini 3)
     modelos_disponiveis = ["gemini-2.5-flash"]
 
@@ -442,11 +472,12 @@ def realizar_analise_gemini(home, away, league):
         try:
             client = genai.Client(api_key=api_key)
             # 🚀 Chamada com o Prompt formatado
-            response = client.models.generate_content(model=modelos_disponiveis[0], contents=prompt_final)
+            response = client.models.generate_content(
+                model=modelos_disponiveis[0], contents=prompt_final)
             return response.text
         except Exception as e:
             if "429" in str(e):
-                continue 
+                continue
             continue
 
     return "❌ Todas as chaves atingiram o limite. Tente novamente em alguns minutos."
@@ -454,12 +485,14 @@ def realizar_analise_gemini(home, away, league):
 # -----------------------------
 # FUNÇÃO BUSCAR JOGOS
 # -----------------------------
+
+
 @st.cache_data(ttl=3600)
 def get_matches(league_code, date_str):
     # Criamos a data de "amanhã" para cobrir jogos que viram a noite no UTC
     dt_obj = datetime.datetime.strptime(date_str, "%Y-%m-%d")
     amanha_str = (dt_obj + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
-    
+
     url = f"{BASE_URL}/competitions/{league_code}/matches?dateFrom={date_str}&dateTo={amanha_str}"
     try:
         response = requests.get(url, headers=headers)
@@ -469,7 +502,8 @@ def get_matches(league_code, date_str):
     except:
         return []
 
-@st.cache_data(ttl=3600)    
+
+@st.cache_data(ttl=3600)
 def buscar_jogos_brasil_v3(data_str):
     """Busca APENAS jogos do Brasil na API-Football para não poluir a lista"""
     params = {"date": data_str, "timezone": "America/Sao_Paulo"}
@@ -482,11 +516,12 @@ def buscar_jogos_brasil_v3(data_str):
                 # 🔍 Verifica o país da competição
                 pais = f['league'].get('country', '')
                 nome_liga = f['league'].get('name', '')
-                
+
                 # 🛡️ FILTRO REFINADO: Apenas Brasil AND (Série A ou Série B)
                 # Adicionamos a Copa do Brasil também, pois é um "campeonato maior"
-                ligas_principais = ["Serie A", "Serie B", "Copa do Brasil", "Paulista"]
-                
+                ligas_principais = ["Serie A", "Serie B",
+                                    "Copa do Brasil", "Paulista"]
+
                 # 🛡️ TRAVA: Só adiciona na lista se o país for o Brasil
                 if pais == "Brazil" and any(liga in nome_liga for liga in ligas_principais):
                     matches.append({
@@ -502,21 +537,26 @@ def buscar_jogos_brasil_v3(data_str):
     except Exception as e:
         print(f"Erro na API 2: {e}")
         return []
-    
+
+
 @st.dialog("🔄 Atualizar Inteligência")
 def modal_confirmar_reanalise(jogo, jogo_id):
-    st.write(f"Deseja forçar uma nova análise da I.A para **{jogo['home']} x {jogo['away']}**?")
-    st.info("💡 Use isso apenas se houver notícias de última hora (ex.: lesões ou escalações).")
+    st.write(
+        f"Deseja forçar uma nova análise da I.A para **{jogo['home']} x {jogo['away']}**?")
+    st.info(
+        "💡 Use isso apenas se houver notícias de última hora (ex.: lesões ou escalações).")
     # 🕵️ TRAVA VISUAL: Só mostra o custo se NÃO for vitalício
     if not st.session_state.get('vitalicio', False):
         st.warning("💰 Custo: **0.5 crédito**")
-    
-    label_botao = "✅ Confirmar" if st.session_state.get('vitalicio', False) else "✅ Confirmar e Descontar"
-    
+
+    label_botao = "✅ Confirmar" if st.session_state.get(
+        'vitalicio', False) else "✅ Confirmar e Descontar"
+
     if st.button(label_botao, use_container_width=True):
         with st.spinner("Recalculando probabilidades com dados novos..."):
-            nova_analise = realizar_analise_gemini(jogo['home'], jogo['away'], jogo['league_name'])
-            
+            nova_analise = realizar_analise_gemini(
+                jogo['home'], jogo['away'], jogo['league_name'])
+
             if "atingiram o limite" not in nova_analise:
                 # Sobrescreve o Cache no Firebase
                 db.collection('analises_cache').document(jogo_id).set({
@@ -525,13 +565,15 @@ def modal_confirmar_reanalise(jogo, jogo_id):
                 })
                 # Desconta o crédito reduzido (0.5) da reanálise
                 descontar_reanalise_firebase(st.session_state.usuario, jogo_id)
-                
+
                 # ATUALIZA A SESSÃO ANTES DO RERUN
-                st.session_state.ultima_analise = nova_analise # Alimenta a Col2
-                
-                registrar_log_firebase(st.session_state.usuario, "REANALISE", f"{jogo['home']} x {jogo['away']}")
+                st.session_state.ultima_analise = nova_analise  # Alimenta a Col2
+
+                registrar_log_firebase(
+                    st.session_state.usuario, "REANALISE", f"{jogo['home']} x {jogo['away']}")
                 st.rerun()
-                
+
+
 # -----------------------------
 # INTERFACE PRINCIPAL
 # -----------------------------
@@ -542,7 +584,7 @@ if msg_global:
     # Lista de emojis para dar aquele grau no visual
     emojis = ["📢", "🔔", "⚠️", "🔥", "🚀", "💡", "⚽", "🏆"]
     icon = random.choice(emojis)
-    
+
     st.info(f"{icon} **AVISO:** {msg_global}")
 
 st.markdown("---")
@@ -554,19 +596,19 @@ col1, col2 = st.columns([1, 2])
 
 with col1:
     st.subheader("🏆 Seleção de Partida")
-    
+
     btn_analise = False
-    
+
     if autorizado:
         fuso_br = pytz.timezone("America/Sao_Paulo")
         agora_br = datetime.datetime.now(fuso_br)
         hoje_br = agora_br.date()
         hora_atual_str = agora_br.strftime("%H:%M")
-        
+
         date = st.date_input(
             "📅 Selecione a data para buscar jogos:",
             value=hoje_br,
-            min_value=hoje_br, # Trava calendário retroativo
+            min_value=hoje_br,  # Trava calendário retroativo
             format="DD/MM/YYYY",
             on_change=limpar_analise
         )
@@ -580,18 +622,20 @@ with col1:
             all_matches = []
             leagues_found = []
             data_formatada = date.strftime("%d/%m/%Y")
-            
+
             with st.spinner(f"Buscando partidas do dia {data_formatada}..."):
                 # Busca API 1 (Europa e Brasileirão Série A)
                 for league_name, league_code in LEAGUES.items():
                     matches_api1 = get_matches(league_code, date_str)
                     if matches_api1:
-                        if league_name not in leagues_found: leagues_found.append(league_name)
+                        if league_name not in leagues_found:
+                            leagues_found.append(league_name)
                         for m in matches_api1:
                             # Conversão de UTC para Brasília
-                            utc_dt = datetime.datetime.strptime(m["utcDate"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=pytz.utc)
+                            utc_dt = datetime.datetime.strptime(
+                                m["utcDate"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=pytz.utc)
                             brasil_dt = utc_dt.astimezone(fuso_br)
-                            
+
                             # Só adiciona se o jogo for de fato no dia selecionado (fuso corrigido)
                             if brasil_dt.date() == date:
                                 all_matches.append({
@@ -606,70 +650,81 @@ with col1:
                 # Busca API 2 (Série B, Estaduais e Copas do Brasil)
                 jogos_br_api2 = buscar_jogos_brasil_v3(date_str)
                 for jb in jogos_br_api2:
-                    # 🛡️ TRAVA DE DUPLICIDADE: 
+                    # 🛡️ TRAVA DE DUPLICIDADE:
                     # Se o jogo já veio da API 1 (Série A), ignora na API 2
-                    is_duplicado = any(jb['home'].lower() in m['home'].lower() for m in all_matches)
-                    
+                    is_duplicado = any(
+                        jb['home'].lower() in m['home'].lower() for m in all_matches)
+
                     # 🛡️ FILTRO DE LIGA:
                     # Garante que não estamos pegando a Série A na API 2 para não dar conflito
                     is_serie_a = "serie a" in jb['league_name'].lower()
-                    
+
                     if not is_duplicado and not is_serie_a:
-                        if jb['league_display'] not in leagues_found: leagues_found.append(jb['league_display'])
+                        if jb['league_display'] not in leagues_found:
+                            leagues_found.append(jb['league_display'])
                         all_matches.append(jb)
 
             # Ordena por horário
             all_matches = sorted(all_matches, key=lambda x: x['horario'])
 
             if all_matches:
-                sel_league = st.selectbox("Escolha a Liga", ["🌍 Todas"] + leagues_found, on_change=limpar_analise)
-                filtered = [m for m in all_matches if sel_league == "🌍 Todas" or m['league_display'] == sel_league]
-                
+                sel_league = st.selectbox(
+                    "Escolha a Liga", ["🌍 Todas"] + leagues_found, on_change=limpar_analise)
+                filtered = [m for m in all_matches if sel_league ==
+                            "🌍 Todas" or m['league_display'] == sel_league]
+
                 # --- LÓGICA DA TRAVA VISUAL (VERSÃO COMPACTA) ---
                 match_display_options = []
                 for m in filtered:
                     if date == hoje_br and m['horario'] <= hora_atual_str:
                         # Usamos "INDISP." ou "AO VIVO" para não cortar o nome dos times
-                        match_display_options.append(f"🔴 [INDISP.] {m['home']} x {m['away']}")
+                        match_display_options.append(
+                            f"🔴 [INDISP.] {m['home']} x {m['away']}")
                     else:
                         match_display_options.append(m['name'])
 
-                selected_display = st.selectbox("Escolha o Jogo", match_display_options, on_change=limpar_analise)
-                
+                selected_display = st.selectbox(
+                    "Escolha o Jogo", match_display_options, on_change=limpar_analise)
+
                 # Recupera o objeto original
                 idx = match_display_options.index(selected_display)
                 jogo = filtered[idx]
-                
+
                 # 🛠️ ID ÚNICO COM LIGA (Evita colisão)
                 liga_limpa = jogo['league_name'].replace(" ", "_")
                 jogo_id_atual = f"{jogo['home']}_{jogo['away']}_{liga_limpa}_{date_str}"
-                
+
                 # --- BOTÃO COM STATUS NO TEXTO ---
                 esta_bloqueado = "INDISP." in selected_display
-                
+
                 # Busca dados atualizados do usuário para verificar permissão
-                user_doc = db.collection('usuarios').document(st.session_state.usuario).get().to_dict()
+                user_doc = db.collection('usuarios').document(
+                    st.session_state.usuario).get().to_dict()
                 liberados = user_doc.get("analises_liberadas", [])
-                
+
                 ja_pagou = jogo_id_atual in liberados
 
                 if esta_bloqueado:
-                    st.button("🚫 ANÁLISE BLOQUEADA", disabled=True, use_container_width=True)
+                    st.button("🚫 ANÁLISE BLOQUEADA", disabled=True,
+                              use_container_width=True)
                 elif ja_pagou:
                     st.success("✅ Você já possui acesso a esta análise!")
                     # O botão vira apenas um gatilho visual, pois a análise aparecerá na Col 2
-                    st.button("👁️ ANÁLISE LIBERADA", disabled=True, use_container_width=True)
-                    
+                    st.button("👁️ ANÁLISE LIBERADA", disabled=True,
+                              use_container_width=True)
+
                     # Lógica de texto e custo para o botão de recalcular
-                    st.caption("🚨 Notou mudanças de última hora, como desfalque ou lesão de última hora?)")
+                    st.caption(
+                        "🚨 Notou mudanças de última hora, como desfalque ou lesão de última hora?)")
                     texto_reanalise = "🔄 RECALCULAR COM DADOS DE AGORA"
                     if not st.session_state.get('vitalicio', False):
                         texto_reanalise += " (-0.5)"
-                    
+
                     if st.button(texto_reanalise, use_container_width=True):
                         modal_confirmar_reanalise(jogo, jogo_id_atual)
                 else:
-                    btn_analise = st.button("🚀 GERAR ANÁLISE PREMIUM", use_container_width=True)
+                    btn_analise = st.button(
+                        "🚀 GERAR ANÁLISE PREMIUM", use_container_width=True)
             else:
                 st.warning("Nenhuma partida encontrada para esta data.")
     else:
@@ -681,7 +736,7 @@ with col1:
 # -----------------------------
 with col2:
     st.subheader("📊 Análise de Inteligência")
-    
+
     # 🛡️ TRAVA DE SEGURANÇA: Só prossegue se 'jogo' existir na memória
     if 'jogo' in locals() and jogo:
         # Define o ID Único
@@ -691,20 +746,23 @@ with col2:
     # --- LÓGICA DE GERAÇÃO (Quando clica no botão) ---
     if btn_analise and autorizado:
         with st.spinner(f"Analisando partida entre {jogo['home']} x {jogo['away']}..."):
-            resultado = realizar_analise_gemini(jogo['home'], jogo['away'], jogo['league_name'])
-            
+            resultado = realizar_analise_gemini(
+                jogo['home'], jogo['away'], jogo['league_name'])
+
             if "atingiram o limite" not in resultado:
                 # 1. Salva na sessão para exibição imediata
-                st.session_state.ultima_analise = resultado 
+                st.session_state.ultima_analise = resultado
                 # 2. Registra no Firebase (Desconta crédito e libera o jogo)
-                descontar_credito_firebase(st.session_state.usuario, jogo_id_atual)
+                descontar_credito_firebase(
+                    st.session_state.usuario, jogo_id_atual)
                 # 3. (OPCIONAL) Salva a análise em uma coleção global para outros usuários
                 db.collection('analises_cache').document(jogo_id_atual).set({
                     'texto': resultado,
                     'data': datetime.datetime.now(pytz.timezone("America/Sao_Paulo"))
                 })
-                
-                registrar_log_firebase(st.session_state.usuario, "CONSULTA", f"{jogo['home']} x {jogo['away']}")
+
+                registrar_log_firebase(
+                    st.session_state.usuario, "CONSULTA", f"{jogo['home']} x {jogo['away']}")
                 st.rerun()
             else:
                 st.error(resultado)
@@ -714,14 +772,15 @@ with col2:
         # Recupera do cache se a sessão estiver vazia (pós-rerun)
         if not st.session_state.get('ultima_analise'):
             with st.spinner("Recuperando análise liberada..."):
-                cache_ref = db.collection('analises_cache').document(jogo_id_atual).get()
+                cache_ref = db.collection(
+                    'analises_cache').document(jogo_id_atual).get()
                 if cache_ref.exists:
                     st.session_state.ultima_analise = cache_ref.to_dict().get('texto')
-        
+
         # 🛡️ VERIFICAÇÃO FINAL: Só tenta mostrar se realmente houver texto
         if st.session_state.get('ultima_analise'):
             st.markdown(st.session_state.ultima_analise)
-        
+
         # Gera o gráfico baseado na análise exibida
         if "Probabilidades" in st.session_state.ultima_analise:
             probs = extrair_probabilidades(st.session_state.ultima_analise)
@@ -733,51 +792,58 @@ with col2:
             fig = px.bar(
                 df_probs, x='Probabilidade (%)', y='Resultado', orientation='h',
                 text='Probabilidade (%)', color='Resultado',
-                color_discrete_map={'Casa': '#2ecc71', 'Empate': '#95a5a6', 'Fora': '#e74c3c'},
+                color_discrete_map={'Casa': '#2ecc71',
+                                    'Empate': '#95a5a6', 'Fora': '#e74c3c'},
                 title="📊 Probabilidades Visuais"
             )
-            
-            fig.update_layout(showlegend=False, height=250, margin=dict(l=10, r=10, t=50, b=20), xaxis_range=[0, 110])
+
+            fig.update_layout(showlegend=False, height=250, margin=dict(
+                l=10, r=10, t=50, b=20), xaxis_range=[0, 110])
             fig.update_traces(texttemplate='%{text}%', textposition='outside')
             st.plotly_chart(fig, use_container_width=True)
-            
+
             st.markdown("---")
-            st.warning("📢 **AVISO LEGAL:** O placar sugerido é uma estimativa baseada em I.A. Aposte com responsabilidade.")
-    
+            st.warning(
+                "📢 **AVISO LEGAL:** O placar sugerido é uma estimativa baseada em I.A. Aposte com responsabilidade.")
+
     elif not autorizado:
         st.warning("Aguardando login para liberar os dados de I.A.")
     else:
         st.write("Selecione um jogo e gere a análise para ver as estatísticas.")
-        
+
 # -----------------------------
 # DASHBOARD ESTATÍSTICO (RODAPÉ ADMIN)
 # -----------------------------
 if autorizado and st.session_state.get("nivel") == 1:
     st.markdown("---")
     st.subheader("📊 Painel de Controle Analítico")
-    
+
     try:
         # Busca logs do Firebase
-        logs_ref = db.collection('logs').order_by("data_hora", direction=firestore.Query.DESCENDING).limit(100)
+        logs_ref = db.collection('logs').order_by(
+            "data_hora", direction=firestore.Query.DESCENDING).limit(100)
         logs_docs = logs_ref.stream()
         logs_list = [d.to_dict() for d in logs_docs]
         df_stats = pd.DataFrame(logs_list)
-        
+
         if not df_stats.empty:
             # Firebase já retorna datetime, só formatamos para o gráfico
             df_stats['dia'] = df_stats['data_hora'].dt.strftime('%d/%m/%Y')
-            
+
             col_graph1, col_graph2 = st.columns(2)
             with col_graph1:
-                contagem_dia = df_stats.groupby('dia').size().reset_index(name='total')
-                fig_vol = px.line(contagem_dia, x='dia', y='total', title="📈 Uso Diário", template="plotly_dark")
+                contagem_dia = df_stats.groupby(
+                    'dia').size().reset_index(name='total')
+                fig_vol = px.line(contagem_dia, x='dia', y='total',
+                                  title="📈 Uso Diário", template="plotly_dark")
                 fig_vol.update_xaxes(type='category')
                 st.plotly_chart(fig_vol, use_container_width=True)
-            
+
             with col_graph2:
                 dist_acao = df_stats['acao'].value_counts().reset_index()
                 dist_acao.columns = ['Ação', 'Qtd']
-                fig_pizza = px.pie(dist_acao, values='Qtd', names='Ação', title="🍕 Operações")
+                fig_pizza = px.pie(dist_acao, values='Qtd',
+                                   names='Ação', title="🍕 Operações")
                 st.plotly_chart(fig_pizza, use_container_width=True)
     except Exception as e:
         st.error(f"Erro ao carregar dashboard: {e}")
