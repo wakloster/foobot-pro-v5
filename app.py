@@ -62,7 +62,7 @@ def extrair_probabilidades(texto_analise):
     texto_limpo = texto_analise.replace(" ", "")
     # Busca por padrões de números seguidos de %
     numeros = re.findall(r'(\d+)%', texto_limpo)
-    
+
     try:
         if len(numeros) >= 3:
             # Pega os 3 primeiros valores encontrados
@@ -138,14 +138,17 @@ def descontar_credito_firebase(nome_usuario, jogo_id):
                 return "VITALÍCIO"
 
             saldo_atual = float(doc.to_dict().get('creditos', 0))
-            if saldo_atual > 0:
-                novo_saldo = saldo_atual - 1
+
+            if saldo_atual >= 1.0:
+                novo_saldo = round(saldo_atual - 1.0, 2)
                 # Atualiza saldo E adiciona o jogo à lista de liberados
                 user_ref.update({
                     'creditos': novo_saldo,
                     "analises_liberadas": firestore.ArrayUnion([jogo_id])
                 })
                 return novo_saldo
+            else:
+                return "SALDO_INSUFICIENTE"  # Retorna erro em vez de negativar
         return None
     except Exception as e:
         st.error(f"Erro ao atualizar saldo no Firebase: {e}")
@@ -164,11 +167,13 @@ def descontar_reanalise_firebase(nome_usuario, jogo_id):
                 return "VITALÍCIO"
 
             saldo_atual = float(dados.get('creditos', 0))
+
             if saldo_atual >= 0.5:
-                preco_reanalise = 0.5
-                novo_saldo = saldo_atual - 0.5
+                novo_saldo = round(saldo_atual - 0.5, 2)
                 user_ref.update({'creditos': novo_saldo})
                 return novo_saldo
+            else:
+                return "SALDO_INSUFICIENTE"
         return None
     except Exception as e:
         print(f"Erro no desconto: {e}")
@@ -748,12 +753,20 @@ with col1:
 
                         st.caption(
                             "🚨 Mudanças de última hora (lesões/escalação)?")
-                        texto_reanalise = "🔄 RECALCULAR AGORA"
+                        texto_reanalise = "🔄 REANALISAR PARTIDA AGORA"
                         if not is_vitalicio:
                             texto_reanalise += " (-0.5)"
 
                         if st.button(texto_reanalise, use_container_width=True):
-                            modal_confirmar_reanalise(jogo, jogo_id_atual)
+                            # --- VERIFICAÇÃO EM TEMPO REAL ---
+                            user_doc = db.collection('usuarios').document(st.session_state.usuario).get().to_dict()
+                            saldo_limpo = round(float(user_doc.get('creditos', 0)), 2)
+                            
+                            if saldo_limpo < 0.5 and not st.session_state.get('vitalicio'):
+                                st.error(f"❌ Saldo insuficiente para reanálise ({saldo_limpo}). Você precisa de 0.5 créditos.")
+                            else:
+                                # Se tiver saldo, abre o modal ou executa a função
+                                modal_confirmar_reanalise(jogo, jogo_id_atual)
                     else:
                         # Botão principal de compra
                         btn_analise = st.button(
@@ -800,27 +813,39 @@ with col2:
 
     # --- LÓGICA DE GERAÇÃO (Quando clica no botão) ---
     if btn_analise and autorizado:
-        with st.spinner(f"Analisando partida entre {jogo['home']} x {jogo['away']}..."):
-            resultado = realizar_analise_gemini(
-                jogo['home'], jogo['away'], jogo['league_name'])
+        # Busca saldo atualizado antes de começar
+        user_ref_check = db.collection('usuarios').document(
+            st.session_state.usuario).get()
+        saldo_antes = user_ref_check.to_dict().get('creditos', 0)
 
-            if "atingiram o limite" not in resultado:
-                # 1. Salva na sessão para exibição imediata
-                st.session_state.ultima_analise = resultado
-                # 2. Registra no Firebase (Desconta crédito e libera o jogo)
-                descontar_credito_firebase(
-                    st.session_state.usuario, jogo_id_atual)
-                # 3. (OPCIONAL) Salva a análise em uma coleção global para outros usuários
-                db.collection('analises_cache').document(jogo_id_atual).set({
-                    'texto': resultado,
-                    'data': datetime.datetime.now(pytz.timezone("America/Sao_Paulo"))
-                })
+        # Arredonda para 2 casas decimais antes de comparar
+        saldo_limpo = round(float(saldo_antes), 2)
 
-                registrar_log_firebase(
-                    st.session_state.usuario, "CONSULTA", f"{jogo['home']} x {jogo['away']}")
-                st.rerun()
-            else:
-                st.error(resultado)
+        if saldo_limpo < 1.0 and not st.session_state.get('vitalicio'):
+            st.error(
+                f"❌ Saldo insuficiente ({saldo_limpo}). Você precisa de 1.0 crédito para análises completas.")
+        else:
+            with st.spinner(f"Analisando partida entre {jogo['home']} x {jogo['away']}..."):
+                resultado = realizar_analise_gemini(
+                    jogo['home'], jogo['away'], jogo['league_name'])
+
+                if "atingiram o limite" not in resultado:
+                    # 1. Salva na sessão para exibição imediata
+                    st.session_state.ultima_analise = resultado
+                    # 2. Registra no Firebase (Desconta crédito e libera o jogo)
+                    descontar_credito_firebase(
+                        st.session_state.usuario, jogo_id_atual)
+                    # 3. (OPCIONAL) Salva a análise em uma coleção global para outros usuários
+                    db.collection('analises_cache').document(jogo_id_atual).set({
+                        'texto': resultado,
+                        'data': datetime.datetime.now(pytz.timezone("America/Sao_Paulo"))
+                    })
+
+                    registrar_log_firebase(
+                        st.session_state.usuario, "CONSULTA", f"{jogo['home']} x {jogo['away']}")
+                    st.rerun()
+                else:
+                    st.error(resultado)
 
     # --- LÓGICA DE EXIBIÇÃO (Sempre ativa se ja_pagou for True) ---
     if autorizado and ja_pagou:
@@ -839,7 +864,7 @@ with col2:
         # --- GERADOR DE GRÁFICO ---
             # Tenta extrair os dados
             probs = extrair_probabilidades(st.session_state.ultima_analise)
-            
+
             # Monta o DataFrame para o Plotly
             df_probs = pd.DataFrame({
                 'Resultado': ['Casa', 'Empate', 'Fora'],
@@ -848,26 +873,28 @@ with col2:
 
             # Cria o gráfico horizontal
             fig = px.bar(
-                df_probs, 
-                x='Probabilidade (%)', 
-                y='Resultado', 
+                df_probs,
+                x='Probabilidade (%)',
+                y='Resultado',
                 orientation='h',
-                text='Probabilidade (%)', 
+                text='Probabilidade (%)',
                 color='Resultado',
                 # Cores padrão Foobot: Verde (Casa), Cinza (Empate), Vermelho (Fora)
-                color_discrete_map={'Casa': '#2ecc71', 'Empate': '#95a5a6', 'Fora': '#e74c3c'},
+                color_discrete_map={'Casa': '#2ecc71',
+                                    'Empate': '#95a5a6', 'Fora': '#e74c3c'},
                 title="📊 Probabilidades Visuais"
             )
 
             # Ajustes finos de layout
             fig.update_layout(
-                showlegend=False, 
-                height=280, 
+                showlegend=False,
+                height=280,
                 margin=dict(l=10, r=10, t=50, b=20),
-                xaxis_range=[0, 110] # Garante que a barra de 100% apareça inteira
+                # Garante que a barra de 100% apareça inteira
+                xaxis_range=[0, 110]
             )
             fig.update_traces(texttemplate='%{text}%', textposition='outside')
-            
+
             # Renderiza
             st.plotly_chart(fig, use_container_width=True)
 
