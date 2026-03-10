@@ -427,13 +427,13 @@ else:
                 else:
                     st.warning("Preencha todos os campos, porra!")
 
-if st.sidebar.button("Sair", use_container_width=True):
-    # Limpa TUDO da memória da sessão atual
-    for key in list(st.session_state.keys()):
-        del st.session_state[key]
+    if st.sidebar.button("Sair", use_container_width=True):
+        # Limpa TUDO da memória da sessão atual
+        for key in list(st.session_state.keys()):
+            del st.session_state[key]
 
-    # Reinicia o app do zero
-    st.rerun()
+        # Reinicia o app do zero
+        st.rerun()
 
 # --- VARIÁVEIS DE CONTROLE PARA O RESTO DO APP ---
 autorizado = st.session_state.logado
