@@ -624,21 +624,24 @@ with col1:
             data_formatada = date.strftime("%d/%m/%Y")
 
             with st.spinner(f"Buscando partidas do dia {data_formatada}..."):
+                # 1. Resetar as listas para cada nova busca
+                all_matches = []
+                leagues_found = []
+
                 # Busca API 1 (Europa e Brasileirão Série A)
                 for league_name, league_code in LEAGUES.items():
                     matches_api1 = get_matches(league_code, date_str)
+
                     if matches_api1:
-                        if league_name not in leagues_found:
-                            leagues_found.append(league_name)
+                        # Criamos uma lista temporária para filtrar jogos do dia correto
+                        jogos_da_liga = []
                         for m in matches_api1:
-                            # Conversão de UTC para Brasília
                             utc_dt = datetime.datetime.strptime(
                                 m["utcDate"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=pytz.utc)
                             brasil_dt = utc_dt.astimezone(fuso_br)
 
-                            # Só adiciona se o jogo for de fato no dia selecionado (fuso corrigido)
                             if brasil_dt.date() == date:
-                                all_matches.append({
+                                jogos_da_liga.append({
                                     "horario": brasil_dt.strftime("%H:%M"),
                                     "home": m["homeTeam"]["name"],
                                     "away": m["awayTeam"]["name"],
@@ -647,22 +650,24 @@ with col1:
                                     "name": f"[ {brasil_dt.strftime('%H:%M')} ] {m['homeTeam']['name']} x {m['awayTeam']['name']}"
                                 })
 
+                                # SÓ ADICIONA A LIGA se houver jogos para o Brasil no dia selecionado
+                        if jogos_da_liga:
+                            all_matches.extend(jogos_da_liga)
+                            if league_name not in leagues_found:
+                                leagues_found.append(league_name)
+
                 # Busca API 2 (Série B, Estaduais e Copas do Brasil)
                 jogos_br_api2 = buscar_jogos_brasil_v3(date_str)
-                for jb in jogos_br_api2:
-                    # 🛡️ TRAVA DE DUPLICIDADE:
-                    # Se o jogo já veio da API 1 (Série A), ignora na API 2
-                    is_duplicado = any(
-                        jb['home'].lower() in m['home'].lower() for m in all_matches)
+                if jogos_br_api2:
+                    for jb in jogos_br_api2:
+                        is_duplicado = any(
+                            jb['home'].lower() in m['home'].lower() for m in all_matches)
+                        is_serie_a = "serie a" in jb['league_name'].lower()
 
-                    # 🛡️ FILTRO DE LIGA:
-                    # Garante que não estamos pegando a Série A na API 2 para não dar conflito
-                    is_serie_a = "serie a" in jb['league_name'].lower()
-
-                    if not is_duplicado and not is_serie_a:
-                        if jb['league_display'] not in leagues_found:
-                            leagues_found.append(jb['league_display'])
-                        all_matches.append(jb)
+                        if not is_duplicado and not is_serie_a:
+                            all_matches.append(jb)
+                            if jb['league_display'] not in leagues_found:
+                                leagues_found.append(jb['league_display'])
 
             # Ordena por horário
             all_matches = sorted(all_matches, key=lambda x: x['horario'])
@@ -697,42 +702,64 @@ with col1:
                 # --- BOTÃO COM STATUS NO TEXTO ---
                 esta_bloqueado = "INDISP." in selected_display
 
-                # Busca dados atualizados do usuário para verificar permissão
+                # Busca dados atualizados do usuário
                 user_doc = db.collection('usuarios').document(
                     st.session_state.usuario).get().to_dict()
                 liberados = user_doc.get("analises_liberadas", [])
-
                 ja_pagou = jogo_id_atual in liberados
 
                 if esta_bloqueado:
                     st.button("🚫 ANÁLISE BLOQUEADA", disabled=True,
                               use_container_width=True)
-                    # --- MENSAGEM COM O MOTIVO (O QUE VOCÊ TINHA NO OUTRO PC) ---
+
+                    # Mensagem de motivo logo abaixo do botão travado
                     st.error("📉 **Por que esta partida está bloqueada?**")
                     st.info(
                         "O FOOBOT PRO realiza apenas **análises pré-jogo**. "
                         "Como esta partida já iniciou ou encerrou, os dados em tempo real "
-                        "viciariam a probabilidade da nossa Inteligência Artificial. "
-                        "\n\n**Dica:** Selecione jogos que ainda não começaram para obter previsões precisas."
+                        "viciariam a probabilidade da nossa Inteligência Artificial."
                     )
-                elif ja_pagou:
-                    st.success("✅ Você já possui acesso a esta análise!")
-                    # O botão vira apenas um gatilho visual, pois a análise aparecerá na Col 2
-                    st.button("👁️ ANÁLISE LIBERADA", disabled=True,
-                              use_container_width=True)
-
-                    # Lógica de texto e custo para o botão de recalcular
-                    st.caption(
-                        "🚨 Notou mudanças de última hora, como desfalque ou lesão de última hora?)")
-                    texto_reanalise = "🔄 RECALCULAR COM DADOS DE AGORA"
-                    if not st.session_state.get('vitalicio', False):
-                        texto_reanalise += " (-0.5)"
-
-                    if st.button(texto_reanalise, use_container_width=True):
-                        modal_confirmar_reanalise(jogo, jogo_id_atual)
                 else:
-                    btn_analise = st.button(
-                        "🚀 GERAR ANÁLISE PREMIUM", use_container_width=True)
+                    # 1. Se NÃO está bloqueado, primeiro verificamos se já foi pago ou se precisa gerar
+                    if ja_pagou:
+                        st.success("✅ Você já possui acesso!")
+                        st.button("👁️ ANÁLISE LIBERADA",
+                                  disabled=True, use_container_width=True)
+
+                        st.caption(
+                            "🚨 Mudanças de última hora (lesões/escalação)?")
+                        texto_reanalise = "🔄 RECALCULAR AGORA"
+                        if not is_vitalicio:
+                            texto_reanalise += " (-0.5)"
+
+                        if st.button(texto_reanalise, use_container_width=True):
+                            modal_confirmar_reanalise(jogo, jogo_id_atual)
+                    else:
+                        # Botão principal de compra
+                        btn_analise = st.button(
+                            "🚀 GERAR ANÁLISE PREMIUM", use_container_width=True)
+
+                    # 2. Logo abaixo do botão (seja ele de gerar ou de liberado), mostramos o cronômetro
+                    try:
+                        hora_jogo = datetime.datetime.strptime(
+                            f"{date_str} {jogo['horario']}", "%Y-%m-%d %H:%M")
+                        hora_jogo = fuso_br.localize(hora_jogo)
+                        agora = datetime.datetime.now(fuso_br)
+                        diferenca = hora_jogo - agora
+
+                        if diferenca.total_seconds() > 0:
+                            horas, rem = divmod(
+                                int(diferenca.total_seconds()), 3600)
+                            minutos, _ = divmod(rem, 60)
+
+                            if horas > 0:
+                                st.warning(
+                                    f"⏳ Inicia em: **{horas}h {minutos}min**")
+                            else:
+                                st.error(
+                                    f"🔥 **FECHANDO!** Inicia em: **{minutos}min**")
+                    except:
+                        pass
             else:
                 st.warning("Nenhuma partida encontrada para esta data.")
     else:
