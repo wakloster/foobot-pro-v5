@@ -9,6 +9,9 @@ import plotly.express as px
 import random
 import firebase_admin
 from firebase_admin import credentials, firestore
+import mercadopago
+import qrcode
+from io import BytesIO
 
 # -----------------------------
 # CONFIGURAÇÕES INICIAIS
@@ -45,6 +48,9 @@ if not firebase_admin._apps:
 
 db = firestore.client()
 
+# Pega o Token do MP dos Secrets
+MP_TOKEN = st.secrets["MP_ACCESS_TOKEN"]
+
 # -----------------------------
 # FUNÇÕES DE APOIO
 # -----------------------------
@@ -75,6 +81,75 @@ def extrair_probabilidades(texto_analise):
             return [33, 34, 33]
     except:
         return [33, 34, 33]
+
+
+def gerar_pix_mp(valor, usuario_id):
+    # Use seu token APP_USR
+    sdk = mercadopago.SDK(
+        MP_TOKEN)
+
+    payment_data = {
+        "transaction_amount": float(valor),
+        "description": f"Créditos FOObot - {usuario_id}",
+        "payment_method_id": "pix",
+        "external_reference": usuario_id,  # ISSO É O QUE O MAKE VAI LER
+        # Sua URL da imagem
+        "notification_url": st.secrets["MAKE_WEBHOOK_URL"],
+        "payer": {
+            "email": f"{usuario_id}@foobot.com",
+            "first_name": usuario_id
+        }
+    }
+
+    payment_response = sdk.payment().create(payment_data)
+    return payment_response["response"]
+
+
+def gerar_imagem_qrcode(conteudo_pix):
+    qr = qrcode.QRCode(version=1, box_size=10, border=4)
+    qr.add_data(conteudo_pix)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="black", back_color="white")
+
+    # Converte a imagem para um formato que o Streamlit aceita (Bytes)
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+@st.dialog("Finalizar Pagamento")
+def mostrar_tela_pagamento(valor, label):
+    st.write(f"Você escolheu o pacote: **{label}**")
+    st.write(f"Valor a pagar: **R$ {valor:.2f}**")
+
+    with st.spinner("Gerando Pix..."):
+        user_id = st.session_state.get('usuario', 'desconhecido')
+        dados = gerar_pix_mp(valor, user_id)
+
+        if 'point_of_interaction' in dados:
+            pix_code = dados['point_of_interaction']['transaction_data']['qr_code']
+
+            # Gerar a imagem do QR Code
+            img_qr = gerar_imagem_qrcode(pix_code)
+
+            # Centralizar imagem e código
+            col_qr, col_txt = st.columns([1, 1])
+
+            with col_qr:
+                st.image(img_qr, caption="Escaneie com o app do seu banco")
+
+            with col_txt:
+                st.info("Copia e Cola:")
+                st.code(pix_code, language="text")
+                st.success("✅ O saldo cairá automaticamente após o pagamento!")
+
+            st.warning(
+                "⚠️ Não feche esta janela até concluir o pagamento para garantir a confirmação.")
+
+            if st.button("Concluí o pagamento!"):
+                st.rerun()
+        else:
+            st.error("Erro ao conectar com o Mercado Pago. Tente novamente.")
 
 # -----------------------------
 # FUNÇÕES FIREBASE (MIGRAÇÃO)
@@ -268,7 +343,7 @@ def modal_confirmar_recarga(usuario, quantidade):
 # -----------------------------
 # SIDEBAR (LOGIN, GESTÃO DE ACESSO E CRÉDITOS)
 # -----------------------------
-# --- INICIALIZAÇÃO DO ESTADO (Coloque no topo do script) ---
+# --- INICIALIZAÇÃO DO ESTADO ---
 if "logado" not in st.session_state:
     st.session_state.logado = False
     st.session_state.usuario = None
@@ -357,35 +432,34 @@ else:
         st.sidebar.error("🔻 Consumo Variável")
 
         st.sidebar.info("Plano: **Gold Básico**")
-        
-        # --- SISTEMA DE RECARGA TRIBOPAY ---
-        st.sidebar.markdown("---")
-        with st.sidebar.expander("💳 Adquirir Créditos", expanded=False):
-            st.caption("Valor por crédito: R$ 0,75")
-            
-            link_10  = "https://go.tribopay.com.br/kqvky"
-            link_20  = "https://go.tribopay.com.br/txnqc"
-            link_50  = "https://go.tribopay.com.br/1d1cp"
-            link_100 = "https://go.tribopay.com.br/gyggn"
-            
-            u_ref = st.session_state.usuario # O login do usuário logado
-            
-            # Estilo de botões em coluna para os pacotes menores
-            col1, col2 = st.columns(2)
-            with col1:
-                if st.button("🪙 10 (R$ 7,50)", use_container_width=True):
-                    st.link_button("Pagar", f"{link_10}?external_id={u_ref}")
-                if st.button("🪙 50 (R$ 37,50)", use_container_width=True):
-                    st.link_button("Pagar", f"{link_50}?external_id={u_ref}")
-                    
-            with col2:
-                if st.button("🪙 20 (R$ 15,00)", use_container_width=True):
-                    st.link_button("Pagar", f"{link_20}?external_id={u_ref}")
-                # BOTÃO NOVO: 100 CRÉDITOS
-                if st.button("🪙 100 (R$ 75,00)", use_container_width=True):
-                    st.link_button("Pagar", f"{link_100}?external_id={u_ref}")
 
-            st.info("💡 O crédito cai na conta automaticamente após a aprovação do pagamento.")
+        # ----- CARD PARA COMPRAR CRÉDITOS ----
+        with st.sidebar.expander("💳 COMPRAR CRÉDITOS", expanded=False):
+            st.markdown("### ✨ Escolha seu pacote")
+
+            # Criamos os pacotes: (Nome, Quantidade de Créditos, Preço)
+            pacotes = [
+                {"label": "🧪 Teste Real", "qtd": 1, "preco": 1.00},
+                {"label": "🥉 10 Créditos", "qtd": 10, "preco": 7.50},
+                {"label": "🥈 20 Créditos", "qtd": 20, "preco": 15.00},
+                {"label": "🥇 50 Créditos", "qtd": 50, "preco": 37.50},
+                {"label": "💎 100 Créditos", "qtd": 100, "preco": 75.00},
+            ]
+
+            # Renderiza os botões/cards
+            for p in pacotes:
+                with st.container(border=True):
+                    col_info, col_btn = st.columns([1.2, 1])
+                    with col_info:
+                        st.markdown(f"**{p['label']}**")
+                        st.caption(f"Valor: R$ {p['preco']:.2f}")
+                    with col_btn:
+                        # Se clicar, abre o modal de pagamento
+                        if st.button(f"Comprar", key=f"compra_{p['qtd']}"):
+                            mostrar_tela_pagamento(p['preco'], p['label'])
+
+            st.markdown("---")
+            st.caption("💡 1 crédito = R$ 0.75")
 
     # --- ÁREA ADMINISTRATIVA (ESTRUTURA CORRIGIDA) ---
     # Esta parte DEVE vir antes do botão de Logout para garantir a renderização
@@ -790,11 +864,14 @@ with col1:
 
                         if st.button(texto_reanalise, use_container_width=True):
                             # --- VERIFICAÇÃO EM TEMPO REAL ---
-                            user_doc = db.collection('usuarios').document(st.session_state.usuario).get().to_dict()
-                            saldo_limpo = round(float(user_doc.get('creditos', 0)), 2)
-                            
+                            user_doc = db.collection('usuarios').document(
+                                st.session_state.usuario).get().to_dict()
+                            saldo_limpo = round(
+                                float(user_doc.get('creditos', 0)), 2)
+
                             if saldo_limpo < 0.5 and not st.session_state.get('vitalicio'):
-                                st.error(f"❌ Saldo insuficiente para reanálise ({saldo_limpo}). Você precisa de 0.5 créditos.")
+                                st.error(
+                                    f"❌ Saldo insuficiente para reanálise ({saldo_limpo}). Você precisa de 0.5 créditos.")
                             else:
                                 # Se tiver saldo, abre o modal ou executa a função
                                 modal_confirmar_reanalise(jogo, jogo_id_atual)

@@ -6,3 +6,6 @@ plotly
 pytz
 st-gsheets-connection
 firebase-admin
+mercadopago
+qrcode
+Pillow
