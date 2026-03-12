@@ -760,7 +760,17 @@ def modal_confirmar_reanalise(jogo, jogo_id):
 # -----------------------------
 # INTERFACE PRINCIPAL
 # -----------------------------
-st.title("⚽ FOOBOT PRO v5 - FOOBOT I.A")
+#st.title("⚽ FOOBOT PRO v5 - FOOBOT I.A")
+# --- LOGO PRINCIPAL (Header) NO CANTO ESQUERDO ---
+# Criamos duas colunas. A primeira para a logo, e a segunda maior para o respiro.
+# Uma proporção de [1, 3.5] costuma deixar a logo num tamanho médio/bonito no canto.
+col_logo_esquerda, col_logo_respiro = st.columns([1, 2.0])
+
+with col_logo_esquerda:
+    # use_container_width=True faz a imagem preencher toda a coluna que criamos
+    # Se você achar que ficou muito grande, aumente o segundo número (ex: [1, 4.5])
+    st.image("assets/logo_sem_fundo.png", use_container_width=True) 
+
 
 # CHAMADA DO MONITOR (Sempre rodando no background)
 if st.session_state.get("logado"):
