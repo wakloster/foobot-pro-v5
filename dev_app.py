@@ -139,18 +139,28 @@ def mostrar_tela_pagamento(valor, label):
                 st.image(img_qr, caption="Escaneie com o app do seu banco")
 
             with col_txt:
-                st.info("Copia e Cola:")
-                st.code(pix_code, language="text")
-                if st.button("📋 COPIAR CHAVE PIX", use_container_width=True):
-                    # Truque: st.copy_to_clipboard é uma função nova/experimental
-                    # Se não funcionar na sua versão, o st.code acima já resolve.
-                    try:
-                        st.copy_to_clipboard(pix_code)
-                        st.success("Copiado!")
-                    except:
-                        st.toast("Use o botão no canto do código acima ↗️")
+                st.markdown("### 🔑 Pix Copia e Cola")
 
-                st.write("")  # Espaçamento
+                # --- BOTÃO DE COPIAR VIA HTML/JS (Não recarrega a página) ---
+                button_html = f"""
+                <button onclick="navigator.clipboard.writeText('{pix_code}').then(() => alert('Chave Pix Copiada!'))" 
+                    style="
+                        width: 100%;
+                        background-color: #2ecc71;
+                        color: white;
+                        border: none;
+                        padding: 10px;
+                        border-radius: 5px;
+                        cursor: pointer;
+                        font-weight: bold;
+                        margin-top: 10px;
+                    ">
+                    📋 COPIAR CHAVE PIX
+                </button>
+                """
+                st.components.v1.html(button_html, height=60)
+
+                st.write("")
                 st.success("✅ O saldo cairá automaticamente!")
 
             st.warning(
