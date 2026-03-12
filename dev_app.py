@@ -141,7 +141,17 @@ def mostrar_tela_pagamento(valor, label):
             with col_txt:
                 st.info("Copia e Cola:")
                 st.code(pix_code, language="text")
-                st.success("✅ O saldo cairá automaticamente após o pagamento!")
+                if st.button("📋 COPIAR CHAVE PIX", use_container_width=True):
+                    # Truque: st.copy_to_clipboard é uma função nova/experimental
+                    # Se não funcionar na sua versão, o st.code acima já resolve.
+                    try:
+                        st.copy_to_clipboard(pix_code)
+                        st.success("Copiado!")
+                    except:
+                        st.toast("Use o botão no canto do código acima ↗️")
+
+                st.write("")  # Espaçamento
+                st.success("✅ O saldo cairá automaticamente!")
 
             st.warning(
                 "⚠️ Não feche esta janela até concluir o pagamento para garantir a confirmação.")
@@ -339,6 +349,33 @@ def modal_confirmar_recarga(usuario, quantidade):
         if st.button("❌ Cancelar", use_container_width=True):
             st.rerun()
 
+# -----------------------------
+# MONITOR DE PAGAMENTO AUTOMÁTICO
+# -----------------------------
+
+
+@st.fragment(run_every=5)  # Verifica o Firebase a cada 5 segundos
+def monitorar_pagamento_real():
+    if st.session_state.get("logado"):
+        user_id = st.session_state.usuario
+        # Busca apenas o campo necessário para economizar processamento
+        user_ref = db.collection('usuarios').document(user_id)
+        doc = user_ref.get()
+
+        if doc.exists:
+            dados = doc.to_dict()
+            id_no_firebase = dados.get("ultimo_id_pagamento")
+
+            # SÓ DISPARA SE O ID FOR DIFERENTE DO QUE SALVAMOS NO LOGIN
+            if id_no_firebase and id_no_firebase != st.session_state.get("id_pago_visto"):
+                st.balloons()
+                st.toast(
+                    f"✅ CRÉDITO ADICIONADO! Seu novo saldo é: {dados.get('creditos', 0):.1f}", icon="💰")
+                # Salva que já vimos esse ID para não repetir o aviso
+                st.session_state.id_pago_visto = id_no_firebase
+                time.sleep(4)
+                st.rerun()
+
 
 # -----------------------------
 # SIDEBAR (LOGIN, GESTÃO DE ACESSO E CRÉDITOS)
@@ -346,6 +383,7 @@ def modal_confirmar_recarga(usuario, quantidade):
 # --- INICIALIZAÇÃO DO ESTADO ---
 if "logado" not in st.session_state:
     st.session_state.logado = False
+    st.session_state.id_pago_visto = None
     st.session_state.usuario = None
     st.session_state.nome_exibicao = ""
 if "ultima_analise" not in st.session_state:
@@ -380,6 +418,9 @@ if not st.session_state.get("logado", False):
                     if is_vitalicio or creditos_val > 0:
                         st.session_state.logado = True
                         st.session_state.usuario = nome_input_login
+                        # Captura o ID que já está lá para o monitor não disparar no login
+                        st.session_state.id_pago_visto = user_data.get(
+                            "ultimo_id_pagamento")
                         st.session_state.nivel = int(user_data.get('nivel', 0))
                         st.session_state.nome_exibicao = user_data.get(
                             'exibicao', nome_input_login.capitalize())
@@ -393,7 +434,7 @@ if not st.session_state.get("logado", False):
                         registrar_log_firebase(
                             nome_input_login, "LOGIN", "Acessou o sistema")
                         # Aguarda 2 segundos para o usuário ver a mensagem antes de atualizar a página
-                        time.sleep(3)
+                        time.sleep(2)
                         st.rerun()
                     else:
                         st.sidebar.warning(
@@ -708,6 +749,11 @@ def modal_confirmar_reanalise(jogo, jogo_id):
 # INTERFACE PRINCIPAL
 # -----------------------------
 st.title("⚽ FOOBOT PRO v5 - FOOBOT I.A")
+
+# CHAMADA DO MONITOR (Sempre rodando no background)
+if st.session_state.get("logado"):
+    monitorar_pagamento_real()
+
 # EXIBIÇÃO DO BROADCAST COM EMOJI ALEATÓRIO
 msg_global = gerenciar_broadcast_firebase()
 if msg_global:

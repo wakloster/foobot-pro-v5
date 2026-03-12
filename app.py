@@ -9,6 +9,9 @@ import plotly.express as px
 import random
 import firebase_admin
 from firebase_admin import credentials, firestore
+import mercadopago
+import qrcode
+from io import BytesIO
 
 # -----------------------------
 # CONFIGURAÇÕES INICIAIS
@@ -45,6 +48,9 @@ if not firebase_admin._apps:
 
 db = firestore.client()
 
+# Pega o Token do MP dos Secrets
+MP_TOKEN = st.secrets["MP_ACCESS_TOKEN"]
+
 # -----------------------------
 # FUNÇÕES DE APOIO
 # -----------------------------
@@ -75,6 +81,85 @@ def extrair_probabilidades(texto_analise):
             return [33, 34, 33]
     except:
         return [33, 34, 33]
+
+
+def gerar_pix_mp(valor, usuario_id):
+    # Use seu token APP_USR
+    sdk = mercadopago.SDK(
+        MP_TOKEN)
+
+    payment_data = {
+        "transaction_amount": float(valor),
+        "description": f"Créditos FOObot - {usuario_id}",
+        "payment_method_id": "pix",
+        "external_reference": usuario_id,  # ISSO É O QUE O MAKE VAI LER
+        # Sua URL da imagem
+        "notification_url": st.secrets["MAKE_WEBHOOK_URL"],
+        "payer": {
+            "email": f"{usuario_id}@foobot.com",
+            "first_name": usuario_id
+        }
+    }
+
+    payment_response = sdk.payment().create(payment_data)
+    return payment_response["response"]
+
+
+def gerar_imagem_qrcode(conteudo_pix):
+    qr = qrcode.QRCode(version=1, box_size=10, border=4)
+    qr.add_data(conteudo_pix)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="black", back_color="white")
+
+    # Converte a imagem para um formato que o Streamlit aceita (Bytes)
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+@st.dialog("Finalizar Pagamento")
+def mostrar_tela_pagamento(valor, label):
+    st.write(f"Você escolheu o pacote: **{label}**")
+    st.write(f"Valor a pagar: **R$ {valor:.2f}**")
+
+    with st.spinner("Gerando Pix..."):
+        user_id = st.session_state.get('usuario', 'desconhecido')
+        dados = gerar_pix_mp(valor, user_id)
+
+        if 'point_of_interaction' in dados:
+            pix_code = dados['point_of_interaction']['transaction_data']['qr_code']
+
+            # Gerar a imagem do QR Code
+            img_qr = gerar_imagem_qrcode(pix_code)
+
+            # Centralizar imagem e código
+            col_qr, col_txt = st.columns([1, 1])
+
+            with col_qr:
+                st.image(img_qr, caption="Escaneie com o app do seu banco")
+
+            with col_txt:
+                st.info("Copia e Cola:")
+                st.code(pix_code, language="text")
+                if st.button("📋 COPIAR CHAVE PIX", use_container_width=True):
+                    # Truque: st.copy_to_clipboard é uma função nova/experimental
+                    # Se não funcionar na sua versão, o st.code acima já resolve.
+                    try:
+                        st.copy_to_clipboard(pix_code)
+                        st.success("Copiado!")
+                    except:
+                        st.toast("Use o botão no canto do código acima ↗️")
+
+                st.write("")  # Espaçamento
+                st.success("✅ O saldo cairá automaticamente!")
+
+            st.warning(
+                "⚠️ Não feche esta janela até concluir o pagamento para garantir a confirmação.")
+
+            if st.button("Concluí o pagamento!"):
+                st.rerun()
+        else:
+            st.error("Erro ao conectar com o Mercado Pago. Tente novamente.")
 
 # -----------------------------
 # FUNÇÕES FIREBASE (MIGRAÇÃO)
@@ -264,13 +349,41 @@ def modal_confirmar_recarga(usuario, quantidade):
         if st.button("❌ Cancelar", use_container_width=True):
             st.rerun()
 
+# -----------------------------
+# MONITOR DE PAGAMENTO AUTOMÁTICO
+# -----------------------------
+
+
+@st.fragment(run_every=5)  # Verifica o Firebase a cada 5 segundos
+def monitorar_pagamento_real():
+    if st.session_state.get("logado"):
+        user_id = st.session_state.usuario
+        # Busca apenas o campo necessário para economizar processamento
+        user_ref = db.collection('usuarios').document(user_id)
+        doc = user_ref.get()
+
+        if doc.exists:
+            dados = doc.to_dict()
+            id_no_firebase = dados.get("ultimo_id_pagamento")
+
+            # SÓ DISPARA SE O ID FOR DIFERENTE DO QUE SALVAMOS NO LOGIN
+            if id_no_firebase and id_no_firebase != st.session_state.get("id_pago_visto"):
+                st.balloons()
+                st.toast(
+                    f"✅ CRÉDITO ADICIONADO! Seu novo saldo é: {dados.get('creditos', 0):.1f}", icon="💰")
+                # Salva que já vimos esse ID para não repetir o aviso
+                st.session_state.id_pago_visto = id_no_firebase
+                time.sleep(4)
+                st.rerun()
+
 
 # -----------------------------
 # SIDEBAR (LOGIN, GESTÃO DE ACESSO E CRÉDITOS)
 # -----------------------------
-# --- INICIALIZAÇÃO DO ESTADO (Coloque no topo do script) ---
+# --- INICIALIZAÇÃO DO ESTADO ---
 if "logado" not in st.session_state:
     st.session_state.logado = False
+    st.session_state.id_pago_visto = None
     st.session_state.usuario = None
     st.session_state.nome_exibicao = ""
 if "ultima_analise" not in st.session_state:
@@ -305,6 +418,9 @@ if not st.session_state.get("logado", False):
                     if is_vitalicio or creditos_val > 0:
                         st.session_state.logado = True
                         st.session_state.usuario = nome_input_login
+                        # Captura o ID que já está lá para o monitor não disparar no login
+                        st.session_state.id_pago_visto = user_data.get(
+                            "ultimo_id_pagamento")
                         st.session_state.nivel = int(user_data.get('nivel', 0))
                         st.session_state.nome_exibicao = user_data.get(
                             'exibicao', nome_input_login.capitalize())
@@ -318,7 +434,7 @@ if not st.session_state.get("logado", False):
                         registrar_log_firebase(
                             nome_input_login, "LOGIN", "Acessou o sistema")
                         # Aguarda 2 segundos para o usuário ver a mensagem antes de atualizar a página
-                        time.sleep(3)
+                        time.sleep(2)
                         st.rerun()
                     else:
                         st.sidebar.warning(
@@ -350,11 +466,41 @@ else:
     else:
         # Visual padrão para quem usa créditos
         st.sidebar.markdown(f"### 🪙 Saldo: {saldo_atual:.1f}")
+        if st.sidebar.button("🔄 Atualizar Saldo"):
+            st.rerun()
 
         # Opcional: Se quiser manter o selo de "Variável" de forma discreta
         st.sidebar.error("🔻 Consumo Variável")
 
         st.sidebar.info("Plano: **Gold Básico**")
+
+        # ----- CARD PARA COMPRAR CRÉDITOS ----
+        with st.sidebar.expander("💳 COMPRAR CRÉDITOS", expanded=False):
+            st.markdown("### ✨ Escolha seu pacote")
+
+            # Criamos os pacotes: (Nome, Quantidade de Créditos, Preço)
+            pacotes = [
+                {"label": "🧪 Teste Real", "qtd": 1, "preco": 1.00},
+                {"label": "🥉 10 Créditos", "qtd": 10, "preco": 7.50},
+                {"label": "🥈 20 Créditos", "qtd": 20, "preco": 15.00},
+                {"label": "🥇 50 Créditos", "qtd": 50, "preco": 37.50},
+                {"label": "💎 100 Créditos", "qtd": 100, "preco": 75.00},
+            ]
+
+            # Renderiza os botões/cards
+            for p in pacotes:
+                with st.container(border=True):
+                    col_info, col_btn = st.columns([1.2, 1])
+                    with col_info:
+                        st.markdown(f"**{p['label']}**")
+                        st.caption(f"Valor: R$ {p['preco']:.2f}")
+                    with col_btn:
+                        # Se clicar, abre o modal de pagamento
+                        if st.button(f"Comprar", key=f"compra_{p['qtd']}"):
+                            mostrar_tela_pagamento(p['preco'], p['label'])
+
+            st.markdown("---")
+            st.caption("💡 1 crédito = R$ 0.75")
 
     # --- ÁREA ADMINISTRATIVA (ESTRUTURA CORRIGIDA) ---
     # Esta parte DEVE vir antes do botão de Logout para garantir a renderização
@@ -603,6 +749,11 @@ def modal_confirmar_reanalise(jogo, jogo_id):
 # INTERFACE PRINCIPAL
 # -----------------------------
 st.title("⚽ FOOBOT PRO v5 - FOOBOT I.A")
+
+# CHAMADA DO MONITOR (Sempre rodando no background)
+if st.session_state.get("logado"):
+    monitorar_pagamento_real()
+
 # EXIBIÇÃO DO BROADCAST COM EMOJI ALEATÓRIO
 msg_global = gerenciar_broadcast_firebase()
 if msg_global:
@@ -759,11 +910,14 @@ with col1:
 
                         if st.button(texto_reanalise, use_container_width=True):
                             # --- VERIFICAÇÃO EM TEMPO REAL ---
-                            user_doc = db.collection('usuarios').document(st.session_state.usuario).get().to_dict()
-                            saldo_limpo = round(float(user_doc.get('creditos', 0)), 2)
-                            
+                            user_doc = db.collection('usuarios').document(
+                                st.session_state.usuario).get().to_dict()
+                            saldo_limpo = round(
+                                float(user_doc.get('creditos', 0)), 2)
+
                             if saldo_limpo < 0.5 and not st.session_state.get('vitalicio'):
-                                st.error(f"❌ Saldo insuficiente para reanálise ({saldo_limpo}). Você precisa de 0.5 créditos.")
+                                st.error(
+                                    f"❌ Saldo insuficiente para reanálise ({saldo_limpo}). Você precisa de 0.5 créditos.")
                             else:
                                 # Se tiver saldo, abre o modal ou executa a função
                                 modal_confirmar_reanalise(jogo, jogo_id_atual)
