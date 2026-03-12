@@ -490,7 +490,6 @@ else:
 
             # Criamos os pacotes: (Nome, Quantidade de Créditos, Preço)
             pacotes = [
-                {"label": "🧪 Teste Real", "qtd": 1, "preco": 1.00},
                 {"label": "🥉 10 Créditos", "qtd": 10, "preco": 7.50},
                 {"label": "🥈 20 Créditos", "qtd": 20, "preco": 15.00},
                 {"label": "🥇 50 Créditos", "qtd": 50, "preco": 37.50},
