@@ -16,8 +16,11 @@ from io import BytesIO
 # -----------------------------
 # CONFIGURAÇÕES INICIAIS
 # -----------------------------
-st.set_page_config(page_title="FOOBOT PRO v5 - FOOBOT I.A",
-                   page_icon="⚽", layout="wide")
+st.set_page_config(
+    page_title="FOOBOT PRO - FOOBOT I.A",
+    page_icon="assets/favicon.png",
+    layout="wide"
+)
 
 if "historico_analises" not in st.session_state:
     # Dicionário: {ID_DO_JOGO: TEXTO_DA_ANALISE}
