@@ -12,14 +12,26 @@ from firebase_admin import credentials, firestore
 import mercadopago
 import qrcode
 from io import BytesIO
+from firebase_admin import auth
+
+# --- 1. INICIALIZAÇÃO IMEDIATA DO ESTADO ---
+# Isso garante que o comando abaixo não dê erro de "KeyError" ou "AttributeError"
+if "logado" not in st.session_state:
+    st.session_state.logado = False
+if "nome_exibicao" not in st.session_state:
+    st.session_state.nome_exibicao = ""
+if "usuario" not in st.session_state:
+    st.session_state.usuario = None
 
 # -----------------------------
-# CONFIGURAÇÕES INICIAIS
+# 2. CONFIGURAÇÕES INICIAIS
 # -----------------------------
 st.set_page_config(
     page_title="FOOBOT PRO - FOOBOT I.A",
     page_icon="assets/favicon.png",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="expanded" if not st.session_state.get(
+        "logado") else "collapsed"
 )
 
 if "historico_analises" not in st.session_state:
@@ -294,6 +306,74 @@ def adicionar_creditos_firebase(nome_usuario, quantidade):
         return False, str(e)
 
 
+def autocadastro_firebase(nome_completo, login_id, email, senha):
+    try:
+        # 1. Cria no AUTHENTICATION (Cofre do Google)
+        user_record = auth.create_user(
+            email=email, password=senha, uid=login_id, display_name=nome_completo
+        )
+
+        # 2. Cria no FIRESTORE (Sua carteira de créditos - SEM SENHA)
+        user_data = {
+            "exibicao": nome_completo.split()[0],
+            "usuario": login_id,
+            "email": email,
+            "creditos": 0.0,
+            "nivel": 0,
+            "bonus_recebido": False,
+            "vitalicio": False,
+            "analises_liberadas": [],
+            "data_cadastro": datetime.datetime.now(pytz.timezone("America/Sao_Paulo"))
+        }
+        db.collection('usuarios').document(login_id).set(user_data)
+        registrar_log_firebase(login_id, "AUTOCADASTRO",
+                               "Conta criada com sucesso.")
+        return True, user_data
+    except Exception as e:
+        return False, str(e)
+
+
+def verificar_login_auth(email_ou_user, senha):
+    """
+    Valida as credenciais no Firebase Auth. 
+    Retorna o UID (Login) se estiver correto, ou None se falhar.
+    """
+    try:
+        # 1. Se o cara digitou o Login (ID), precisamos do e-mail dele para o Auth
+        email_final = email_ou_user
+        uid_final = email_ou_user
+
+        if "@" not in email_ou_user:
+            user_doc = db.collection('usuarios').document(email_ou_user).get()
+            if user_doc.exists:
+                email_final = user_doc.to_dict().get('email')
+            else:
+                return None, "Usuário não encontrado."
+        else:
+            # Se digitou email, buscamos o UID no Firestore
+            query = db.collection('usuarios').where(
+                "email", "==", email_ou_user).get()
+            if query:
+                uid_final = query[0].id
+            else:
+                return None, "E-mail não cadastrado."
+
+        # 2. No Admin SDK não existe 'sign_in_with_password'.
+        # O padrão profissional é usar a REST API do Google para validar a senha:
+        import requests
+        url = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={st.secrets['FIREBASE_WEB_API_KEY']}"
+        payload = {"email": email_final,
+                   "password": senha, "returnSecureToken": True}
+        r = requests.post(url, json=payload)
+
+        if r.status_code == 200:
+            return uid_final, "Sucesso"
+        else:
+            return None, "Senha incorreta ou erro de acesso."
+    except Exception as e:
+        return None, str(e)
+
+
 def registrar_log_firebase(usuario, acao, detalhe):
     """Registra logs como novos documentos em uma coleção, sem limite de quota!"""
     try:
@@ -393,70 +473,149 @@ def monitorar_pagamento_real():
 # -----------------------------
 # SIDEBAR (LOGIN, GESTÃO DE ACESSO E CRÉDITOS)
 # -----------------------------
-# --- INICIALIZAÇÃO DO ESTADO ---
-if "logado" not in st.session_state:
-    st.session_state.logado = False
-    st.session_state.id_pago_visto = None
-    st.session_state.usuario = None
-    st.session_state.nome_exibicao = ""
-if "ultima_analise" not in st.session_state:
-    st.session_state.ultima_analise = None
 
 # --- SIDEBAR ESTILIZADA ---
 st.sidebar.markdown("### 👤 Área do Usuário")
 st.sidebar.markdown("---")
 
-# Verificação de Estado para alternar entre Tela de Login e Dashboard
 if not st.session_state.get("logado", False):
-    # --- TELA DE LOGIN (Só aparece se NÃO estiver logado) ---
-    nome_input_login = st.sidebar.text_input(
-        "Digite seu usuário:", key="login_input").strip().lower()
+    # Aqui criamos as abas para o usuário escolher entre entrar ou criar conta
+    tab_login, tab_cadastro = st.sidebar.tabs(["🚀 Entrar", "📝 Criar Conta"])
 
-    if st.sidebar.button("🚀 Entrar", use_container_width=True):
-        # 🛡️ TRAVA DE SEGURANÇA: Verifica se o campo não está vazio
-        if not nome_input_login:
-            st.sidebar.warning(
-                "⚠️ Por favor, digite seu usuário antes de entrar.")
-        else:
-            # Só faz a chamada ao Firebase se houver texto
-            try:
-                user_ref = db.collection('usuarios').document(nome_input_login)
-                doc = user_ref.get()
+    with tab_login:
+        identificador = st.text_input(
+            "Usuário ou E-mail:", key="login_id").strip().lower()
+        senha_login = st.text_input(
+            "Senha:", type="password", key="login_pass")
 
-                if doc.exists:
-                    user_data = doc.to_dict()
-                    creditos_val = float(user_data.get('creditos', 0))
-                    is_vitalicio = user_data.get('vitalicio', False)
+        col_btn_in, col_btn_forgot = st.columns([1, 1.6])
 
-                    if is_vitalicio or creditos_val > 0:
+        with col_btn_in:
+            if st.button("🚀 Entrar", use_container_width=True, key="btn_login_real"):
+                if identificador and senha_login:
+                    with st.spinner("Validando..."):
+                        # 1. Busca o e-mail se o cara digitou o login
+                        email_final = identificador
+                        if "@" not in identificador:
+                            user_doc = db.collection(
+                                'usuarios').document(identificador).get()
+                            if user_doc.exists:
+                                email_final = user_doc.to_dict().get('email')
+                            else:
+                                st.error("Usuário não encontrado.")
+                                st.stop()
+
+                        # 2. Valida a senha na API do Google
+                        import requests
+                        url_auth = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={st.secrets['FIREBASE_WEB_API_KEY']}"
+                        payload = {
+                            "email": email_final, "password": senha_login, "returnSecureToken": True}
+                        r = requests.post(url_auth, json=payload)
+
+                        if r.status_code == 200:
+                            # 3. Puxa os dados reais do Firestore para a sessão
+                            query = db.collection('usuarios').where(
+                                "email", "==", email_final).get()
+                            user_data = query[0].to_dict()
+
+                            st.session_state.logado = True
+                            st.session_state.usuario = user_data.get('usuario')
+                            st.session_state.nome_exibicao = user_data.get(
+                                'exibicao')
+                            st.session_state.nivel = int(
+                                user_data.get('nivel', 0))
+                            st.session_state.vitalicio = user_data.get(
+                                'vitalicio', False)
+                            st.balloons()
+                            st.rerun()
+                        else:
+                            st.error("Senha incorreta!")
+                else:
+                    st.warning("Preencha os campos!")
+
+        with col_btn_forgot:
+            if st.button("🔑 Esqueci a senha", use_container_width=True):
+                if identificador:
+                    try:
+                        # 1. Descobrir o e-mail
+                        email_reset = identificador
+                        if "@" not in identificador:
+                            doc = db.collection('usuarios').document(
+                                identificador).get()
+                            if doc.exists:
+                                email_reset = doc.to_dict().get('email')
+                            else:
+                                st.error("Usuário não encontrado.")
+                                st.stop()
+
+                        # 2. DISPARAR E-MAIL REAL VIA REST API DO GOOGLE
+                        import requests
+                        api_key = st.secrets["FIREBASE_WEB_API_KEY"]
+                        url = f"https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode?key={api_key}"
+                        payload = {"requestType": "PASSWORD_RESET",
+                                   "email": email_reset}
+
+                        response = requests.post(url, json=payload)
+
+                        if response.status_code == 200:
+                            st.success(f"E-mail enviado para {email_reset}!")
+                            st.warning(
+                                "🚨 **ATENÇÃO:** O link pode cair na sua pasta de **SPAM** ou **LIXO ELETRÔNICO**. Verifique lá!")
+                        else:
+                            st.error(
+                                "Erro ao solicitar o e-mail. Verifique se o endereço está correto.")
+
+                    except Exception as e:
+                        st.error(f"Erro no processo: {e}")
+                else:
+                    st.warning("Digite seu login ou e-mail acima.")
+
+    with tab_cadastro:
+        st.markdown("🎁 Ganhe **5 créditos** ao criar sua conta!")
+
+        # Criamos um formulário para evitar que a página recarregue a cada campo digitado
+        with st.form("form_cadastro", clear_on_submit=False):
+            reg_nome = st.text_input("Nome Completo:")
+            reg_user = st.text_input(
+                "Nome de Usuário (login):").strip().lower()
+            reg_email = st.text_input("E-mail:").strip().lower()
+            reg_pass = st.text_input(
+                "Senha (mín. 6 caracteres):", type="password")
+            reg_pass2 = st.text_input("Repita a Senha:", type="password")
+
+            # No st.form, o botão PRECISA ser o st.form_submit_button
+            btn_registrar = st.form_submit_button(
+                "Finalizar Cadastro 🚀", use_container_width=True)
+
+        if btn_registrar:
+            if not all([reg_nome, reg_user, reg_email, reg_pass, reg_pass2]):
+                st.warning("Preencha todos os campos!")
+            elif reg_pass != reg_pass2:
+                st.error("As senhas não conferem!")
+            elif len(reg_pass) < 6:
+                st.error("A senha deve ter pelo menos 6 caracteres!")
+            else:
+                try:
+                    # Chama sua função de cadastro (que já cria no Auth e Firestore)
+                    sucesso, user_info = autocadastro_firebase(
+                        reg_nome, reg_user, reg_email, reg_pass)
+
+                    if sucesso:
                         st.session_state.logado = True
-                        st.session_state.usuario = nome_input_login
-                        # Captura o ID que já está lá para o monitor não disparar no login
-                        st.session_state.id_pago_visto = user_data.get(
-                            "ultimo_id_pagamento")
-                        st.session_state.nivel = int(user_data.get('nivel', 0))
-                        st.session_state.nome_exibicao = user_data.get(
-                            'exibicao', nome_input_login.capitalize())
-                        st.session_state.vitalicio = is_vitalicio
+                        st.session_state.usuario = reg_user
+                        st.session_state.nome_exibicao = user_info["exibicao"]
+                        st.session_state.nivel = 0
+                        st.session_state.vitalicio = False
 
-                        # --- EFEITO DE BOAS-VINDAS ---
-                        st.balloons()  # Solta balões na tela
-                        st.sidebar.success(
-                            f"🚀 Bem-vindo ao time, {st.session_state.nome_exibicao}!")
-
-                        registrar_log_firebase(
-                            nome_input_login, "LOGIN", "Acessou o sistema")
-                        # Aguarda 2 segundos para o usuário ver a mensagem antes de atualizar a página
+                        st.balloons()
+                        st.success(f"Bem-vindo, {user_info['exibicao']}!")
                         time.sleep(2)
                         st.rerun()
                     else:
-                        st.sidebar.warning(
-                            "⚠️ Você não possui créditos suficientes.")
-                else:
-                    st.sidebar.error("❌ Usuário não encontrado.")
-            except Exception as e:
-                # Captura qualquer outro erro inesperado do Firebase
-                st.sidebar.error(f"Erro ao conectar com o servidor: {e}")
+                        st.error(f"Erro: {user_info}")
+                except Exception as e:
+                    st.error(f"Erro crítico: {str(e)}")
+
 else:
     # --- TELA LOGADA (SIDEBAR) ---
     st.sidebar.success(f"Olá **{st.session_state.nome_exibicao}**")
@@ -545,7 +704,7 @@ else:
             df_view = obter_dados_usuarios_firebase()
             if not df_view.empty:
                 st.dataframe(
-                    df_view[['nome', 'creditos', 'nivel']], hide_index=True)
+                    df_view[['exibicao', 'creditos']], hide_index=True)
 
         # --- ABA 3: AUDITORIA (VAR DO SISTEMA) ---
         with st.sidebar.expander("📜 Histórico de Logs", expanded=False):
@@ -760,7 +919,7 @@ def modal_confirmar_reanalise(jogo, jogo_id):
 # -----------------------------
 # INTERFACE PRINCIPAL
 # -----------------------------
-#st.title("⚽ FOOBOT PRO v5 - FOOBOT I.A")
+# st.title("⚽ FOOBOT PRO v5 - FOOBOT I.A")
 # --- LOGO PRINCIPAL (Header) NO CANTO ESQUERDO ---
 # Criamos duas colunas. A primeira para a logo, e a segunda maior para o respiro.
 # Uma proporção de [1, 3.5] costuma deixar a logo num tamanho médio/bonito no canto.
@@ -769,7 +928,7 @@ col_logo_esquerda, col_logo_respiro = st.columns([1, 2.0])
 with col_logo_esquerda:
     # use_container_width=True faz a imagem preencher toda a coluna que criamos
     # Se você achar que ficou muito grande, aumente o segundo número (ex: [1, 4.5])
-    st.image("assets/logo_sem_fundo.png", use_container_width=True) 
+    st.image("assets/logo_sem_fundo.png", use_container_width=True)
 
 
 # CHAMADA DO MONITOR (Sempre rodando no background)
@@ -788,300 +947,317 @@ if msg_global:
 st.markdown("---")
 
 # -----------------------------
-# INTERFACE - COLUNA 1
+# INTERFACE PRINCIPAL COM ABAS
 # -----------------------------
-col1, col2 = st.columns([1, 2])
+if autorizado:
+    # 1. BUSCA DADOS PARA VERIFICAR SE ESTÁ COMPLETO
+    u_ref_aviso = db.collection('usuarios').document(st.session_state.usuario)
+    u_dados_aviso = u_ref_aviso.get().to_dict()
 
-with col1:
-    st.subheader("🏆 Seleção de Partida")
+    # Verifica se falta CPF ou Telefone
+    cadastro_incompleto = not u_dados_aviso.get(
+        'cpf') or not u_dados_aviso.get('telefone')
 
-    btn_analise = False
+    # 🚀 Controlar qual aba está aberta
+    if "aba_ativa" not in st.session_state:
+        st.session_state.aba_ativa = 0  # 0 é a aba de Jogos
 
-    if autorizado:
-        fuso_br = pytz.timezone("America/Sao_Paulo")
-        agora_br = datetime.datetime.now(fuso_br)
-        hoje_br = agora_br.date()
-        hora_atual_str = agora_br.strftime("%H:%M")
+    # Criamos as abas para separar o Jogo do Perfil
+    tab_jogos, tab_perfil = st.tabs(["⚽ Analisador de Jogos", "👤 Meu Perfil"])
 
-        date = st.date_input(
-            "📅 Selecione a data para buscar jogos:",
-            value=hoje_br,
-            min_value=hoje_br,  # Trava calendário retroativo
-            format="DD/MM/YYYY",
-            on_change=limpar_analise
-        )
+    with tab_jogos:
+        if cadastro_incompleto:
+            # Criamos um container bonitão para o aviso
+            with st.container(border=True):
+                st.info(
+                    "🎁 **BÔNUS DISPONÍVEL:** Você tem **5 CRÉDITOS GRÁTIS** esperando! Complete seu cadastro para liberar.")
 
-        if date:
-            if date < hoje_br:
-                st.error("🚫 Não é permitido analisar jogos que já aconteceram!")
-                st.stop()
+                # O botão que faz a mágica
+                if st.button("CLIQUE AQUI PARA COMPLETAR AGORA ➔", use_container_width=True):
+                    # Como o Streamlit não permite mudar o índice do st.tabs via código direto facilmente,
+                    # a gente usa esse alerta visual e instrução rápida:
+                    st.warning(
+                        "⬆️ **QUASE LÁ!** Clique na aba **'👤 Meu Perfil'** bem ali no topo da tela para ganhar seus créditos!")
+                    st.balloons()  # Um incentivo extra kkk
 
-            date_str = date.strftime("%Y-%m-%d")
-            all_matches = []
-            leagues_found = []
-            data_formatada = date.strftime("%d/%m/%Y")
+        # CÓDIGO ORIGINAL DE COLUNAS
+        col1, col2 = st.columns([1, 2])
 
-            with st.spinner(f"Buscando partidas do dia {data_formatada}..."):
-                # 1. Resetar as listas para cada nova busca
-                all_matches = []
-                leagues_found = []
+        with col1:
+            st.subheader("🏆 Seleção de Partida")
+            btn_analise = False
 
-                # Busca API 1 (Europa e Brasileirão Série A)
-                for league_name, league_code in LEAGUES.items():
-                    matches_api1 = get_matches(league_code, date_str)
+            fuso_br = pytz.timezone("America/Sao_Paulo")
+            agora_br = datetime.datetime.now(fuso_br)
+            hoje_br = agora_br.date()
+            hora_atual_str = agora_br.strftime("%H:%M")
 
-                    if matches_api1:
-                        # Criamos uma lista temporária para filtrar jogos do dia correto
-                        jogos_da_liga = []
-                        for m in matches_api1:
-                            utc_dt = datetime.datetime.strptime(
-                                m["utcDate"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=pytz.utc)
-                            brasil_dt = utc_dt.astimezone(fuso_br)
+            date = st.date_input(
+                "📅 Selecione a data para buscar jogos:",
+                value=hoje_br,
+                min_value=hoje_br,
+                format="DD/MM/YYYY",
+                on_change=limpar_analise
+            )
 
-                            if brasil_dt.date() == date:
-                                jogos_da_liga.append({
-                                    "horario": brasil_dt.strftime("%H:%M"),
-                                    "home": m["homeTeam"]["name"],
-                                    "away": m["awayTeam"]["name"],
-                                    "league_display": league_name,
-                                    "league_name": m["competition"]["name"],
-                                    "name": f"[ {brasil_dt.strftime('%H:%M')} ] {m['homeTeam']['name']} x {m['awayTeam']['name']}"
-                                })
+            if date:
+                if date < hoje_br:
+                    st.error(
+                        "🚫 Não é permitido analisar jogos que já aconteceram!")
+                    st.stop()
 
-                                # SÓ ADICIONA A LIGA se houver jogos para o Brasil no dia selecionado
-                        if jogos_da_liga:
-                            all_matches.extend(jogos_da_liga)
-                            if league_name not in leagues_found:
-                                leagues_found.append(league_name)
+                date_str = date.strftime("%Y-%m-%d")
+                data_formatada = date.strftime("%d/%m/%Y")
 
-                # Busca API 2 (Série B, Estaduais e Copas do Brasil)
-                jogos_br_api2 = buscar_jogos_brasil_v3(date_str)
-                if jogos_br_api2:
-                    for jb in jogos_br_api2:
-                        is_duplicado = any(
-                            jb['home'].lower() in m['home'].lower() for m in all_matches)
-                        is_serie_a = "serie a" in jb['league_name'].lower()
+                with st.spinner(f"Buscando partidas do dia {data_formatada}..."):
+                    all_matches = []
+                    leagues_found = []
 
-                        if not is_duplicado and not is_serie_a:
-                            all_matches.append(jb)
-                            if jb['league_display'] not in leagues_found:
-                                leagues_found.append(jb['league_display'])
+                    # Busca API 1
+                    for league_name, league_code in LEAGUES.items():
+                        matches_api1 = get_matches(league_code, date_str)
+                        if matches_api1:
+                            jogos_da_liga = []
+                            for m in matches_api1:
+                                utc_dt = datetime.datetime.strptime(
+                                    m["utcDate"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=pytz.utc)
+                                brasil_dt = utc_dt.astimezone(fuso_br)
+                                if brasil_dt.date() == date:
+                                    jogos_da_liga.append({
+                                        "horario": brasil_dt.strftime("%H:%M"),
+                                        "home": m["homeTeam"]["name"],
+                                        "away": m["awayTeam"]["name"],
+                                        "league_display": league_name,
+                                        "league_name": m["competition"]["name"],
+                                        "name": f"[ {brasil_dt.strftime('%H:%M')} ] {m['homeTeam']['name']} x {m['awayTeam']['name']}"
+                                    })
+                            if jogos_da_liga:
+                                all_matches.extend(jogos_da_liga)
+                                if league_name not in leagues_found:
+                                    leagues_found.append(league_name)
 
-            # Ordena por horário
-            all_matches = sorted(all_matches, key=lambda x: x['horario'])
+                    # Busca API 2
+                    jogos_br_api2 = buscar_jogos_brasil_v3(date_str)
+                    if jogos_br_api2:
+                        for jb in jogos_br_api2:
+                            is_duplicado = any(
+                                jb['home'].lower() in m['home'].lower() for m in all_matches)
+                            is_serie_a = "serie a" in jb['league_name'].lower()
+                            if not is_duplicado and not is_serie_a:
+                                all_matches.append(jb)
+                                if jb['league_display'] not in leagues_found:
+                                    leagues_found.append(jb['league_display'])
 
-            if all_matches:
-                sel_league = st.selectbox(
-                    "Escolha a Liga", ["🌍 Todas"] + leagues_found, on_change=limpar_analise)
-                filtered = [m for m in all_matches if sel_league ==
-                            "🌍 Todas" or m['league_display'] == sel_league]
+                all_matches = sorted(all_matches, key=lambda x: x['horario'])
 
-                # --- LÓGICA DA TRAVA VISUAL (VERSÃO COMPACTA) ---
-                match_display_options = []
-                for m in filtered:
-                    if date == hoje_br and m['horario'] <= hora_atual_str:
-                        # Usamos "INDISP." ou "AO VIVO" para não cortar o nome dos times
-                        match_display_options.append(
-                            f"🔴 [INDISP.] {m['home']} x {m['away']}")
-                    else:
-                        match_display_options.append(m['name'])
+                if all_matches:
+                    sel_league = st.selectbox(
+                        "Escolha a Liga", ["🌍 Todas"] + leagues_found, on_change=limpar_analise)
+                    filtered = [m for m in all_matches if sel_league ==
+                                "🌍 Todas" or m['league_display'] == sel_league]
 
-                selected_display = st.selectbox(
-                    "Escolha o Jogo", match_display_options, on_change=limpar_analise)
+                    match_display_options = []
+                    for m in filtered:
+                        if date == hoje_br and m['horario'] <= hora_atual_str:
+                            match_display_options.append(
+                                f"🔴 [INDISP.] {m['home']} x {m['away']}")
+                        else:
+                            match_display_options.append(m['name'])
 
-                # Recupera o objeto original
-                idx = match_display_options.index(selected_display)
-                jogo = filtered[idx]
+                    selected_display = st.selectbox(
+                        "Escolha o Jogo", match_display_options, on_change=limpar_analise)
+                    idx = match_display_options.index(selected_display)
+                    jogo = filtered[idx]
 
-                # 🛠️ ID ÚNICO COM LIGA (Evita colisão)
-                liga_limpa = jogo['league_name'].replace(" ", "_")
-                jogo_id_atual = f"{jogo['home']}_{jogo['away']}_{liga_limpa}_{date_str}"
+                    liga_limpa = jogo['league_name'].replace(" ", "_")
+                    jogo_id_atual = f"{jogo['home']}_{jogo['away']}_{liga_limpa}_{date_str}"
 
-                # --- BOTÃO COM STATUS NO TEXTO ---
-                esta_bloqueado = "INDISP." in selected_display
+                    esta_bloqueado = "INDISP." in selected_display
+                    user_doc = db.collection('usuarios').document(
+                        st.session_state.usuario).get().to_dict()
+                    liberados = user_doc.get("analises_liberadas", [])
+                    ja_pagou = jogo_id_atual in liberados
 
-                # Busca dados atualizados do usuário
-                user_doc = db.collection('usuarios').document(
-                    st.session_state.usuario).get().to_dict()
-                liberados = user_doc.get("analises_liberadas", [])
-                ja_pagou = jogo_id_atual in liberados
-
-                if esta_bloqueado:
-                    st.button("🚫 ANÁLISE BLOQUEADA", disabled=True,
-                              use_container_width=True)
-
-                    # Mensagem de motivo logo abaixo do botão travado
-                    st.error("📉 **Por que esta partida está bloqueada?**")
-                    st.info(
-                        "O FOOBOT PRO realiza apenas **análises pré-jogo**. "
-                        "Como esta partida já iniciou ou encerrou, os dados em tempo real "
-                        "viciariam a probabilidade da nossa Inteligência Artificial."
-                    )
-                else:
-                    # 1. Se NÃO está bloqueado, primeiro verificamos se já foi pago ou se precisa gerar
-                    if ja_pagou:
-                        st.success("✅ Você já possui acesso!")
-                        st.button("👁️ ANÁLISE LIBERADA",
+                    if esta_bloqueado:
+                        st.button("🚫 ANÁLISE BLOQUEADA",
                                   disabled=True, use_container_width=True)
-
-                        st.caption(
-                            "🚨 Mudanças de última hora (lesões/escalação)?")
-                        texto_reanalise = "🔄 REANALISAR PARTIDA AGORA"
-                        if not is_vitalicio:
-                            texto_reanalise += " (-0.5)"
-
-                        if st.button(texto_reanalise, use_container_width=True):
-                            # --- VERIFICAÇÃO EM TEMPO REAL ---
-                            user_doc = db.collection('usuarios').document(
-                                st.session_state.usuario).get().to_dict()
-                            saldo_limpo = round(
-                                float(user_doc.get('creditos', 0)), 2)
-
-                            if saldo_limpo < 0.5 and not st.session_state.get('vitalicio'):
-                                st.error(
-                                    f"❌ Saldo insuficiente para reanálise ({saldo_limpo}). Você precisa de 0.5 créditos.")
-                            else:
-                                # Se tiver saldo, abre o modal ou executa a função
-                                modal_confirmar_reanalise(jogo, jogo_id_atual)
+                        st.error("📉 **Por que esta partida está bloqueada?**")
+                        st.info("O FOOBOT PRO realiza apenas análises pré-jogo.")
                     else:
-                        # Botão principal de compra
-                        btn_analise = st.button(
-                            "🚀 GERAR ANÁLISE PREMIUM", use_container_width=True)
+                        if ja_pagou:
+                            st.success("✅ Você já possui acesso!")
+                            st.button("👁️ ANÁLISE LIBERADA",
+                                      disabled=True, use_container_width=True)
+                            texto_reanalise = "🔄 REANALISAR PARTIDA AGORA"
+                            if not st.session_state.get('vitalicio'):
+                                texto_reanalise += " (-0.5)"
+                            if st.button(texto_reanalise, use_container_width=True):
+                                modal_confirmar_reanalise(jogo, jogo_id_atual)
+                        else:
+                            btn_analise = st.button(
+                                "🚀 GERAR ANÁLISE PREMIUM", use_container_width=True)
 
-                    # 2. Logo abaixo do botão (seja ele de gerar ou de liberado), mostramos o cronômetro
-                    try:
-                        hora_jogo = datetime.datetime.strptime(
-                            f"{date_str} {jogo['horario']}", "%Y-%m-%d %H:%M")
-                        hora_jogo = fuso_br.localize(hora_jogo)
-                        agora = datetime.datetime.now(fuso_br)
-                        diferenca = hora_jogo - agora
+        with col2:
+            st.subheader("📊 Análise de Inteligência")
+            if 'jogo' in locals() and jogo:
+                if btn_analise:
+                    user_ref_check = db.collection('usuarios').document(
+                        st.session_state.usuario).get()
+                    saldo_antes = float(
+                        user_ref_check.to_dict().get('creditos', 0))
+                    if saldo_antes < 1.0 and not st.session_state.get('vitalicio'):
+                        st.error(f"❌ Saldo insuficiente ({saldo_antes}).")
+                    else:
+                        with st.spinner(f"Analisando {jogo['home']} x {jogo['away']}..."):
+                            resultado = realizar_analise_gemini(
+                                jogo['home'], jogo['away'], jogo['league_name'])
+                            if "atingiram o limite" not in resultado:
+                                st.session_state.ultima_analise = resultado
+                                descontar_credito_firebase(
+                                    st.session_state.usuario, jogo_id_atual)
+                                db.collection('analises_cache').document(jogo_id_atual).set({
+                                    'texto': resultado, 'data': datetime.datetime.now(pytz.timezone("America/Sao_Paulo"))
+                                })
+                                registrar_log_firebase(
+                                    st.session_state.usuario, "CONSULTA", f"{jogo['home']} x {jogo['away']}")
+                                st.rerun()
 
-                        if diferenca.total_seconds() > 0:
-                            horas, rem = divmod(
-                                int(diferenca.total_seconds()), 3600)
-                            minutos, _ = divmod(rem, 60)
+                if ja_pagou:
+                    if not st.session_state.get('ultima_analise'):
+                        cache_ref = db.collection(
+                            'analises_cache').document(jogo_id_atual).get()
+                        if cache_ref.exists:
+                            st.session_state.ultima_analise = cache_ref.to_dict().get('texto')
 
-                            if horas > 0:
-                                st.warning(
-                                    f"⏳ Inicia em: **{horas}h {minutos}min**")
-                            else:
-                                st.error(
-                                    f"🔥 **FECHANDO!** Inicia em: **{minutos}min**")
-                    except:
-                        pass
+                    if st.session_state.get('ultima_analise'):
+                        st.markdown(st.session_state.ultima_analise)
+                        probs = extrair_probabilidades(
+                            st.session_state.ultima_analise)
+                        df_probs = pd.DataFrame(
+                            {'Resultado': ['Casa', 'Empate', 'Fora'], 'Probabilidade (%)': probs})
+                        fig = px.bar(df_probs, x='Probabilidade (%)', y='Resultado', orientation='h', text='Probabilidade (%)',
+                                     color='Resultado', color_discrete_map={'Casa': '#2ecc71', 'Empate': '#95a5a6', 'Fora': '#e74c3c'})
+                        st.plotly_chart(fig, use_container_width=True)
             else:
-                st.warning("Nenhuma partida encontrada para esta data.")
-    else:
-        st.error("🔒 Área Restrita - Faça login na lateral.")
-        st.info("Para visualizar as partidas disponíveis e gerar análises, por favor, realize o login na barra lateral.")
+                st.write("Selecione um jogo para ver a análise.")
 
-# -----------------------------
-# INTERFACE - COLUNA 2
-# -----------------------------
-with col2:
-    st.subheader("📊 Análise de Inteligência")
+    with tab_perfil:
+        st.subheader("👤 Configurações do Perfil")
 
-    # 🛡️ TRAVA DE SEGURANÇA: Só prossegue se 'jogo' existir na memória
-    if 'jogo' in locals() and jogo:
-        # Define o ID Único
-        liga_limpa = jogo['league_name'].replace(" ", "_")
-        jogo_id_atual = f"{jogo['home']}_{jogo['away']}_{liga_limpa}_{date_str}"
+        # 1. BUSCA DADOS SEMPRE QUE ENTRA NA ABA (Garante dado novo)
+        u_ref = db.collection('usuarios').document(st.session_state.usuario)
+        u_dados = u_ref.get().to_dict()
 
-    # --- LÓGICA DE GERAÇÃO (Quando clica no botão) ---
-    if btn_analise and autorizado:
-        # Busca saldo atualizado antes de começar
-        user_ref_check = db.collection('usuarios').document(
-            st.session_state.usuario).get()
-        saldo_antes = user_ref_check.to_dict().get('creditos', 0)
+        with st.form("meu_perfil_form"):
+            c1, c2 = st.columns(2)
+            p_nome = c1.text_input("Nome de Exibição:",
+                                   value=u_dados.get('exibicao', ''))
+            p_whatsapp = c1.text_input(
+                "WhatsApp (apenas números):", value=u_dados.get('telefone', ''))
+            p_cpf = c2.text_input("CPF (apenas números):",
+                                  value=u_dados.get('cpf', ''), max_chars=11)
+            c2.info(f"**E-mail:** {u_dados.get('email')}")
 
-        # Arredonda para 2 casas decimais antes de comparar
-        saldo_limpo = round(float(saldo_antes), 2)
+            btn_salvar = st.form_submit_button(
+                "💾 Salvar e Validar Perfil", use_container_width=True)
 
-        if saldo_limpo < 1.0 and not st.session_state.get('vitalicio'):
-            st.error(
-                f"❌ Saldo insuficiente ({saldo_limpo}). Você precisa de 1.0 crédito para análises completas.")
-        else:
-            with st.spinner(f"Analisando partida entre {jogo['home']} x {jogo['away']}..."):
-                resultado = realizar_analise_gemini(
-                    jogo['home'], jogo['away'], jogo['league_name'])
+        if btn_salvar:
+            # --- FUNÇÃO INTERNA DE VALIDAÇÃO DE CPF ---
+            def validar_cpf(cpf_num):
+                cpf_num = ''.join(filter(str.isdigit, cpf_num))
+                if len(cpf_num) != 11 or cpf_num == cpf_num[0] * 11:
+                    return False
+                for i in range(9, 11):
+                    soma = sum(int(cpf_num[num]) * ((i + 1) - num)
+                               for num in range(i))
+                    digito = (soma * 10 % 11) % 10
+                    if digito != int(cpf_num[i]):
+                        return False
+                return True
 
-                if "atingiram o limite" not in resultado:
-                    # 1. Salva na sessão para exibição imediata
-                    st.session_state.ultima_analise = resultado
-                    # 2. Registra no Firebase (Desconta crédito e libera o jogo)
-                    descontar_credito_firebase(
-                        st.session_state.usuario, jogo_id_atual)
-                    # 3. (OPCIONAL) Salva a análise em uma coleção global para outros usuários
-                    db.collection('analises_cache').document(jogo_id_atual).set({
-                        'texto': resultado,
-                        'data': datetime.datetime.now(pytz.timezone("America/Sao_Paulo"))
-                    })
+            # --- FLUXO DE VALIDAÇÕES ---
+            if not p_nome or not p_whatsapp or not p_cpf:
+                st.error("⚠️ Preencha todos os campos para continuar.")
 
-                    registrar_log_firebase(
-                        st.session_state.usuario, "CONSULTA", f"{jogo['home']} x {jogo['away']}")
-                    st.rerun()
+            elif not validar_cpf(p_cpf):
+                st.error("❌ CPF inválido! Verifique os números digitados.")
+
+            else:
+                # 2. VERIFICA DUPLICIDADE (Telefone e CPF)
+                # Procura Telefone
+                outros_tel = db.collection('usuarios').where(
+                    'telefone', '==', p_whatsapp).get()
+                # Procura CPF
+                outros_cpf = db.collection('usuarios').where(
+                    'cpf', '==', p_cpf).get()
+
+                # Filtra pra ver se pertencem a OUTROS usuários
+                conflito_tel = any(
+                    doc.id != st.session_state.usuario for doc in outros_tel)
+                conflito_cpf = any(
+                    doc.id != st.session_state.usuario for doc in outros_cpf)
+
+                if conflito_tel:
+                    st.error("❌ Este WhatsApp já está em uso por outro usuário.")
+                elif conflito_cpf:
+                    st.error("❌ Este CPF já está vinculado a outra conta.")
                 else:
-                    st.error(resultado)
+                    # 3. TUDO OK - PREPARA SALVAMENTO
+                    updates = {
+                        "exibicao": p_nome,
+                        "telefone": p_whatsapp,
+                        "cpf": p_cpf
+                    }
 
-    # --- LÓGICA DE EXIBIÇÃO (Sempre ativa se ja_pagou for True) ---
-    if autorizado and ja_pagou:
-        # Recupera do cache se a sessão estiver vazia (pós-rerun)
-        if not st.session_state.get('ultima_analise'):
-            with st.spinner("Recuperando análise liberada..."):
-                cache_ref = db.collection(
-                    'analises_cache').document(jogo_id_atual).get()
-                if cache_ref.exists:
-                    st.session_state.ultima_analise = cache_ref.to_dict().get('texto')
+                    # Lógica do Bônus
+                    foi_bonificado = u_dados.get('bonus_recebido', False)
+                    if not foi_bonificado:
+                        updates["creditos"] = u_dados.get('creditos', 0) + 5.0
+                        updates["bonus_recebido"] = True
+                        st.balloons()
+                        st.success(
+                            "🔥 SUCESSO! Você ganhou 5 créditos de bônus!")
+                        registrar_log_firebase(
+                            st.session_state.usuario, "BÔNUS", "Perfil Completo +5")
+                    else:
+                        st.success("✅ Perfil atualizado com sucesso!")
 
-        # 🛡️ VERIFICAÇÃO FINAL: Só tenta mostrar se realmente houver texto
-        if st.session_state.get('ultima_analise'):
-            st.markdown(st.session_state.ultima_analise)
+                    # Grava no banco e força o REFRESH
+                    u_ref.update(updates)
+                    st.session_state.nome_exibicao = p_nome
+                    time.sleep(1.5)
+                    st.rerun()  # 🚀 Aqui ele limpa o cache e recarrega tudo novo
 
-        # --- GERADOR DE GRÁFICO ---
-            # Tenta extrair os dados
-            probs = extrair_probabilidades(st.session_state.ultima_analise)
+        st.markdown("---")
+        st.subheader("🔐 Segurança")
+        st.write(
+            "Clique abaixo para receber um link de troca de senha no seu e-mail.")
 
-            # Monta o DataFrame para o Plotly
-            df_probs = pd.DataFrame({
-                'Resultado': ['Casa', 'Empate', 'Fora'],
-                'Probabilidade (%)': probs
+        if st.button("🔑 Enviar Link de Nova Senha", use_container_width=True):
+            import requests
+            import json
+            api_key = st.secrets["FIREBASE_WEB_API_KEY"]
+            url = f"https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode?key={api_key}"
+
+            payload = json.dumps({
+                "requestType": "PASSWORD_RESET",
+                "email": u_dados.get('email')
             })
 
-            # Cria o gráfico horizontal
-            fig = px.bar(
-                df_probs,
-                x='Probabilidade (%)',
-                y='Resultado',
-                orientation='h',
-                text='Probabilidade (%)',
-                color='Resultado',
-                # Cores padrão Foobot: Verde (Casa), Cinza (Empate), Vermelho (Fora)
-                color_discrete_map={'Casa': '#2ecc71',
-                                    'Empate': '#95a5a6', 'Fora': '#e74c3c'},
-                title="📊 Probabilidades Visuais"
-            )
+            with st.spinner("Solicitando ao Google..."):
+                r = requests.post(url, data=payload)
 
-            # Ajustes finos de layout
-            fig.update_layout(
-                showlegend=False,
-                height=280,
-                margin=dict(l=10, r=10, t=50, b=20),
-                # Garante que a barra de 100% apareça inteira
-                xaxis_range=[0, 110]
-            )
-            fig.update_traces(texttemplate='%{text}%', textposition='outside')
+                if r.status_code == 200:
+                    st.success(
+                        "✅ Sucesso! O link foi enviado para o seu e-mail cadastrado.")
+                    st.info(
+                        "Verifique a pasta de SPAM se não encontrar na caixa de entrada.")
+                else:
+                    st.error(
+                        "❌ Não foi possível solicitar o link agora. Tente novamente em instantes.")
 
-            # Renderiza
-            st.plotly_chart(fig, use_container_width=True)
-
-            st.markdown("---")
-            st.warning(
-                "📢 **AVISO LEGAL:** O placar sugerido é uma estimativa baseada em I.A. Aposte com responsabilidade.")
-
-    elif not autorizado:
-        st.warning("Aguardando login para liberar os dados de I.A.")
-    else:
-        st.write("Selecione um jogo e gere a análise para ver as estatísticas.")
+else:
+    st.error("🔒 Área Restrita - Faça login na lateral clicando no ícone ' >> ' no canto superior esquerdo.")
 
 # -----------------------------
 # DASHBOARD ESTATÍSTICO (RODAPÉ ADMIN)
