@@ -883,6 +883,10 @@ def buscar_jogos_brasil_v3(data_str):
 
 @st.dialog("🔄 Atualizar Inteligência")
 def modal_confirmar_reanalise(jogo, jogo_id):
+    # 🚨 BLINDAGEM 1: Se o ID sumiu por erro de rede ou clique rápido, para aqui.
+    if not jogo_id or jogo_id == "":
+        st.error("❌ Selecione o jogo novamente na lista antes de reanalisar.")
+        return
     st.write(
         f"Deseja forçar uma nova análise da I.A para **{jogo['home']} x {jogo['away']}**?")
     st.info(
@@ -897,9 +901,10 @@ def modal_confirmar_reanalise(jogo, jogo_id):
     if st.button(label_botao, use_container_width=True):
         # 🚨 TRAVA DE SEGURANÇA CRÍTICA
         if not jogo_id:
-            st.error("❌ Erro: ID do jogo não encontrado. Feche esta janela e tente novamente.")
+            st.error(
+                "❌ Erro: ID do jogo não encontrado. Feche esta janela e tente novamente.")
             return
-        
+
         with st.spinner("Recalculando probabilidades com dados novos..."):
             nova_analise = realizar_analise_gemini(
                 jogo['home'], jogo['away'], jogo['league_name'])
@@ -1075,7 +1080,9 @@ if autorizado:
                     jogo = filtered[idx]
 
                     liga_limpa = jogo['league_name'].replace(" ", "_")
-                    jogo_id_atual = f"{jogo['home']}_{jogo['away']}_{liga_limpa}_{date_str}"
+                    # Limpa barras e pontos que o Firebase não aceita como ID de documento
+                    jogo_id_atual = f"{jogo['home']}_{jogo['away']}_{liga_limpa}_{date_str}".replace(
+                        "/", "-").replace(".", "")
 
                     esta_bloqueado = "INDISP." in selected_display
                     user_doc = db.collection('usuarios').document(
@@ -1090,6 +1097,14 @@ if autorizado:
                         st.info("O FOOBOT PRO realiza apenas análises pré-jogo.")
                     else:
                         if ja_pagou:
+                            # 🚨 BLINDAGEM 2: Só busca no cache se o ID for válido
+                            if jogo_id_atual and jogo_id_atual != "":
+                                if not st.session_state.get('ultima_analise'):
+                                    cache_ref = db.collection(
+                                        'analises_cache').document(jogo_id_atual).get()
+                                    if cache_ref.exists:
+                                        st.session_state.ultima_analise = cache_ref.to_dict().get('texto')
+
                             st.success("✅ Você já possui acesso!")
                             st.button("👁️ ANÁLISE LIBERADA",
                                       disabled=True, use_container_width=True)
@@ -1105,8 +1120,9 @@ if autorizado:
         with col2:
             st.subheader("📊 Análise de Inteligência")
 
-            # 🛡️ SÓ ENTRA SE UM JOGO ESTIVER SELECIONADO
-            if 'jogo' in locals() and jogo and jogo_id_atual:
+            # 🚨 BLINDAGEM 3: O GRANDE ESCUDO
+            # Só deixa o código passar se tiver um jogo e se o ID não for vazio
+            if 'jogo' in locals() and jogo and (jogo_id_atual is not None and jogo_id_atual != ""):
 
                 if btn_analise:
                     user_ref_check = db.collection('usuarios').document(
