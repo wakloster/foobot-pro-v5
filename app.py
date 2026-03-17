@@ -895,6 +895,11 @@ def modal_confirmar_reanalise(jogo, jogo_id):
         'vitalicio', False) else "✅ Confirmar e Descontar"
 
     if st.button(label_botao, use_container_width=True):
+        # 🚨 TRAVA DE SEGURANÇA CRÍTICA
+        if not jogo_id:
+            st.error("❌ Erro: ID do jogo não encontrado. Feche esta janela e tente novamente.")
+            return
+        
         with st.spinner("Recalculando probabilidades com dados novos..."):
             nova_analise = realizar_analise_gemini(
                 jogo['home'], jogo['away'], jogo['league_name'])
@@ -1099,30 +1104,40 @@ if autorizado:
 
         with col2:
             st.subheader("📊 Análise de Inteligência")
-            if 'jogo' in locals() and jogo:
+
+            # 🛡️ SÓ ENTRA SE UM JOGO ESTIVER SELECIONADO
+            if 'jogo' in locals() and jogo and jogo_id_atual:
+
                 if btn_analise:
                     user_ref_check = db.collection('usuarios').document(
                         st.session_state.usuario).get()
                     saldo_antes = float(
                         user_ref_check.to_dict().get('creditos', 0))
+
                     if saldo_antes < 1.0 and not st.session_state.get('vitalicio'):
                         st.error(f"❌ Saldo insuficiente ({saldo_antes}).")
                     else:
                         with st.spinner(f"Analisando {jogo['home']} x {jogo['away']}..."):
                             resultado = realizar_analise_gemini(
                                 jogo['home'], jogo['away'], jogo['league_name'])
+
                             if "atingiram o limite" not in resultado:
                                 st.session_state.ultima_analise = resultado
                                 descontar_credito_firebase(
                                     st.session_state.usuario, jogo_id_atual)
+
+                                # 🚀 GRAVA NO CACHE (Protegido pelo IF lá de cima)
                                 db.collection('analises_cache').document(jogo_id_atual).set({
-                                    'texto': resultado, 'data': datetime.datetime.now(pytz.timezone("America/Sao_Paulo"))
+                                    'texto': resultado,
+                                    'data': datetime.datetime.now(pytz.timezone("America/Sao_Paulo"))
                                 })
+
                                 registrar_log_firebase(
                                     st.session_state.usuario, "CONSULTA", f"{jogo['home']} x {jogo['away']}")
                                 st.rerun()
 
                 if ja_pagou:
+                    # 🚀 BUSCA NO CACHE (Protegido pelo IF lá de cima)
                     if not st.session_state.get('ultima_analise'):
                         cache_ref = db.collection(
                             'analises_cache').document(jogo_id_atual).get()
@@ -1138,8 +1153,11 @@ if autorizado:
                         fig = px.bar(df_probs, x='Probabilidade (%)', y='Resultado', orientation='h', text='Probabilidade (%)',
                                      color='Resultado', color_discrete_map={'Casa': '#2ecc71', 'Empate': '#95a5a6', 'Fora': '#e74c3c'})
                         st.plotly_chart(fig, use_container_width=True)
+
             else:
-                st.write("Selecione um jogo para ver a análise.")
+                # Caso o ID ainda não exista (usuário acabou de logar e não mexeu em nada)
+                st.info(
+                    "👋 Escolha uma partida na coluna ao lado para iniciar a análise.")
 
     with tab_perfil:
         st.subheader("👤 Configurações do Perfil")
