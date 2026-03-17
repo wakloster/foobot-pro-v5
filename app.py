@@ -815,7 +815,10 @@ def realizar_analise_gemini(home, away, league):
             client = genai.Client(api_key=api_key)
             # 🚀 Chamada com o Prompt formatado
             response = client.models.generate_content(
-                model=modelos_disponiveis[0], contents=prompt_final)
+                model=modelos_disponiveis[0], contents=prompt_final,
+                config={
+                    'tools': [{'google_search': {}}] 
+                })
             return response.text
         except Exception as e:
             if "429" in str(e):
