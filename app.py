@@ -789,10 +789,6 @@ def realizar_analise_gemini(home, away, league):
     LISTA_CHAVES = [
         st.secrets["GEMINI_CHAVE_1"],
         st.secrets["GEMINI_CHAVE_2"],
-        st.secrets["GEMINI_CHAVE_3"],
-        st.secrets["GEMINI_CHAVE_4"],
-        st.secrets["GEMINI_CHAVE_5"],
-        st.secrets["GEMINI_CHAVE_6"],
     ]
 
     # 🕵️ BUSCA O PROMPT SECRETO DOS SECRETS (Escondido de curiosos)
@@ -909,15 +905,23 @@ def modal_confirmar_reanalise(jogo, jogo_id):
             return
 
         with st.spinner("Recalculando probabilidades com dados novos..."):
+            # --- CÓDIGO CORRIGIDO ---
             nova_analise = realizar_analise_gemini(
                 jogo['home'], jogo['away'], jogo['league_name'])
 
-            if "atingiram o limite" not in nova_analise:
+            # Adicionamos a checagem se nova_analise existe antes de usar o 'in'
+            if nova_analise and "atingiram o limite" not in nova_analise:
                 # Sobrescreve o Cache no Firebase
                 db.collection('analises_cache').document(jogo_id).set({
                     'texto': nova_analise,
-                    'data': datetime.datetime.now(pytz.timezone("America/Sao_Paulo"))
-                })
+                    'timestamp': datetime.datetime.now() # Bom ter pra saber quando atualizou
+                }, merge=True)
+                st.success("Análise atualizada com sucesso!")
+                st.rerun()
+            elif not nova_analise:
+                st.error("Ocorreu um erro crítico: A API não retornou resposta. Verifique suas chaves.")
+            else:
+                st.warning("Limite de chaves atingido no novo projeto.")
                 # Desconta o crédito reduzido (0.5) da reanálise
                 descontar_reanalise_firebase(st.session_state.usuario, jogo_id)
 
